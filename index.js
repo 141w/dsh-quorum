@@ -438,7 +438,22 @@ export function apply(ctx, config) {
 
     // Reaching here as Lead already implies a roster bigger than the pseudo-row,
     // because a team of one returns before enforce() is ever called.
-    if (isLead) armLeadWait(agent, teamId)
+    if (isLead) {
+      armLeadWait(agent, teamId)
+      // The wait can only be armed once a teammate exists, which is strictly
+      // after this Lead's first prompt was assembled. Measured on 2026-10-03:
+      // the tool reached the second assembly only, and the model reported
+      // "quorum_wait is not in my tool list" and fell back to wait_agent.
+      // A tool the model does not know it has is a tool that does not exist.
+      try {
+        agent.inject({
+          content: [{ type: 'text', text: 'dsh-quorum: the tool `quorum_wait` is now available to you as Team Lead. It blocks until teammates\' reports reach this conversation backed by real tool evidence, and it reports who is silent. Prefer it over `wait_agent`, which cannot observe inactive teammates.' }],
+          source: { kind: 'system' },
+        })
+      } catch (error) {
+        console.log(`[quorum] arm nudge failed: ${error?.message ?? error}`)
+      }
+    }
 
     // Declare the card up front. Without this the only feedback channel is a
     // denial the model has to walk into first, so discipline stays reactive.

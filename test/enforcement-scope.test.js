@@ -23,6 +23,7 @@ function harness() {
   const sections = []
   const registrations = []
   const lines = []
+  const injections = []
   const listeners = new Map()
 
   const ctx = {
@@ -52,6 +53,7 @@ function harness() {
       parentAgent: opts.parentAgent,
       subagent: false,
       session: { id, cwd: '/work' },
+      inject(message) { injections.push({ agent: self, message }) },
     }
     self.ctx = {
       tools: {
@@ -77,7 +79,7 @@ function harness() {
     }
   }
 
-  return { ctx, create, emit, guards, sections, registrations, lines, roster }
+  return { ctx, create, emit, guards, sections, registrations, lines, injections, roster }
 }
 
 test('a plain session (team of one) registers neither guard nor prompt section', () => {
@@ -180,4 +182,25 @@ test('a scout may always report back: allowlists gate mutating tools, not the vo
   assert.equal(scout({ name: 'present' }), undefined)
   assert.match(scout({ name: 'write', arguments: '{"file_path":"/work/review-result.md"}' }), /shape=scout/)
   assert.match(scout({ name: 'bash' }), /is not granted the bash tool/)
+})
+
+// quorum_wait can only be armed after the first teammate exists, which is after
+// the Lead's prompt was already assembled. Measured live on 2026-10-03: the tool
+// reached the second assembly only and the model reported it was not in its tool
+// list and used wait_agent instead. The nudge is what makes the tool real.
+test('arming the Lead also tells the Lead the tool now exists', () => {
+  const h = harness()
+  apply(h.ctx, CONFIG)
+  const lead = h.create('lead-1')
+  h.emit('agent/created', { agent: lead })
+  assert.equal(h.injections.length, 0, 'a plain session must not be nudged')
+  assert.ok(!h.lines.some((l) => l.includes('nudge failed')), 'no inject call may error')
+
+  h.create('child-1', { parentId: 'lead-1', parentAgent: lead, name: 'reviewer' })
+  h.emit('agent/created', { agent: h.roster.get('lead-1')[0].agent })
+
+  const nudges = h.injections.filter((i) => i.agent === lead)
+  assert.equal(nudges.length, 1, 'exactly one nudge per Lead')
+  assert.match(nudges[0].message.content[0].text, /quorum_wait/)
+  assert.ok(!h.lines.some((l) => l.includes('nudge failed')), 'no inject call may error')
 })
