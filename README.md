@@ -10,26 +10,46 @@ A team of coding agents usually fails in one of four ways: anyone can touch anyt
 
 ## Install
 
-Requires `dsh` 0.2.0-rc.2 or compatible, with the experimental Agent Teams bundle enabled.
+Requires `dsh` 0.2.0-rc.2 or compatible. Three bundles have to land in one profile, in this order: the web app, the experimental Agent Teams profile, then this one.
 
 ```sh
-dsh plugin --profile <name> add -w \
-  @deepseek-ai/dsh-experimental-agent-team-profile@0.2.0-rc.2 \
-  dsh-quorum
+dsh plugin --profile <name> add -w @deepseek-ai/dsh-web-app@0.2.0-rc.2
+dsh plugin --profile <name> add -w @deepseek-ai/dsh-experimental-agent-team-profile@0.2.0-rc.2
+dsh plugin --profile <name> add -w github:141w/dsh-quorum
 ```
 
-**Two things will bite you if you skip them:**
+`github:` is how you install it today. **The package is not published to npm yet**, so `add dsh-quorum` resolves to nothing, and no in-app search will find it either — dsh has no plugin marketplace, only a form that takes a package name, a GitHub repo or a local directory. What makes a dsh plugin findable on npm is the keyword convention (`dsh`, `dsh-plugin`, `deepseek-harness`), which this package declares for when it is published.
+
+**The first command is slow, and it is not stuck.** `@deepseek-ai/dsh-web-app` pulls close to 300 packages; measured on this machine it took 20 minutes with one automatic socket-timeout retry. The other two take seconds.
+
+Installing from a checkout works identically and is what the docs here were verified with:
+
+```sh
+dsh plugin --profile <name> add -w /path/to/dsh-quorum
+```
+
+**Three things will bite you if you skip them:**
 
 1. **Always pin the version.** For the `@deepseek-ai/dsh-experimental-*` packages the `latest` dist-tag points at an **older line** (`0.1.5-alpha.2`), not at the `0.2.0-rc.2` that matches the runtime. Installing without a version gets you a bundle that silently does not load.
 2. **Always pass `-w`.** A profile is a pnpm workspace whose root is the profile itself, so `pnpm add` refuses without `--workspace-root` (`ERR_PNPM_ADDING_TO_ROOT`).
+3. **Agent Teams is not optional, and the failure is quiet.** This bundle injects the `agentTeams` service. Install it without the Agent Teams bundle and the plugin never activates — you get one warning line and nothing else:
 
-Verify without starting anything:
+   ```
+   dsh: warning: 1 entry did not activate
+   quorum (dsh-quorum): pending (waiting for service: agentTeams)
+   ```
+
+   Measured, not hypothetical: that is the exact output of installing `github:141w/dsh-quorum` into a fresh profile and starting it.
+
+Verify without starting anything — the `# == dsh-quorum` comment is the layer's provenance:
 
 ```sh
 dsh --profile <name> --dump-config | grep -A 12 "id: quorum"
 ```
 
-Then start normally (`dsh --profile <name>`) and open the Plugins page — **智能体团队** and **dsh-quorum** should both be switched on.
+Then start (`dsh --profile <name> --no-open` prints a token URL) and open the Plugins page — **智能体团队** and **dsh-quorum** should both be switched on.
+
+A `github:` install runs no build step, so pnpm never asks you to authorise one: this package ships runnable source and declares no `prepare` script, deliberately. A TypeScript bundle that needs compiling would force every installer to add it under `allowBuilds` in the profile's `pnpm-workspace.yaml` first.
 
 ## What it enforces
 

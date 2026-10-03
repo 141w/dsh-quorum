@@ -706,6 +706,117 @@ panel  : 本会话：Team Lead / 角色卡 / lead / reviewer 活跃 / （脚注�
 - 未验证 `useSessions` 选择器在成员会话（非 Lead）里的表现：`leadOf()` 走 `subagent.address.parentSessionId`，逻辑与官方 team 面板一致，但官方那段代码注释明确说它依赖 `sessions.binding()`，我没有在真成员会话上点过。
 
 
+---
+
+## D7：为什么在 dsh 里搜不到这个插件（2026-10-04 实测）
+
+结论先说：**dsh 没有插件市场，也没有搜索**。所谓"官方里搜插件"是一个安装输入框，不是目录检索。
+
+### 1. UI 面证据
+
+```
+$ grep -o ""[^"]*"" dsh-client-ui-plugin-manager/lib/client.js | grep -E "插件|包名|目录"
+"输入插件的包名、GitHub 仓库地址或本地目录路径。"
+"官方"  "npm 官方源"  "本地目录"
+```
+
+`dsh-plugin-manager/lib/index.js` 里没有任何 `/-/v1/search` 调用（全文 grep 为空），只有 registry 与 git/tarball 的**安装规格**解析。所以"搜不到"不是索引没建好，而是**没有这个功能**。
+
+### 2. 那社区插件是怎么被发现的
+
+靠 npm 自身的 keyword 约定。`keywords:dsh` 在 npm 上命中 8442 个包，被用的标签是 `dsh` / `dsh-plugin` / `deepseek-harness` / `cordis`，甚至有人做了 `dsh-find-plugin`（keywords 含 `search`、`discovery`）来补这个洞。本仓库此前 **一个 keywords 都没有**，等于主动放弃唯一存在的发现通道。已补。
+
+### 3. 包本身在 npm 上不存在
+
+```
+$ curl -s -o /dev/null -w "%{http_code}\n" https://registry.npmjs.org/dsh-quorum
+404
+$ curl -s https://registry.npmjs.org/dsh-synapse | jq -r '.name, .["dist-tags"]'
+dsh-synapse
+0.4.1
+```
+
+对照样本 `dsh-synapse` 是发布到 npm 的（maintainer `liangmianya`），所以按包名能装上；`dsh-quorum` 只有 GitHub，**按包名安装必然失败**。`npm whoami` = ENEEDAUTH，发布需要她自己的 npm 账号，不由我代做。
+
+### 4. `github:` 安装实测：能装，但缺前置 bundle 时静默不挂载
+
+全新 profile 只装本包：
+
+```
+$ dsh plugin --profile gitinstall add -w github:141w/dsh-quorum
+dependencies:
++ dsh-quorum 0.1.0
+Done in 4.3s using pnpm v9.15.9
+
+$ dsh --profile gitinstall --dump-config | grep -c agent-team
+0
+$ dsh --profile gitinstall --port 3098 --no-open
+dsh: warning: 1 entry did not activate
+quorum (dsh-quorum): pending (waiting for service: agentTeams)
+```
+
+三点值得记住：
+
+- **`dsh plugin add` 不转发 `-w`**，第一条命令没带 `-w` 时直接 `ERR_PNPM_ADDING_TO_ROOT`，而 dsh 接着打印的提示是错的——它说"git 托管插件靠 prepare 构建、被 pnpm 拦住了，去加 allowBuilds"。本包**没有 prepare 脚本**，pnpm 也**没有**要求授权，加上 `-w` 重跑就成功了。这条诊断文案对纯 JS 包是误导。
+- **不写 `prepare` 是刻意的**：本包发布的是可直接运行的源码，因此 `github:` 安装不触发任何构建授权，用户不需要碰 `pnpm-workspace.yaml`。官方文档《从 GitHub 安装：构建脚本这道坎》要求作者补 `prepare`，那是针对需要编译的 TS 包。
+- **`inject: ['agentTeams', …]` 的失败是安静的**：只有一行 warning，插件对象存在但从未 apply。README 现在把这条原文贴出来了，因为它就是陌生人第一次安装会看到的唯一东西。
+
+### 4b. 三步安装重建（同一台机器，全新 profile，按 README 给的顺序）
+
+```
+$ dsh plugin --profile gitinstall add -w @deepseek-ai/dsh-web-app@0.2.0-rc.2
++ @deepseek-ai/dsh-web-app 0.2.0-rc.2
+Done in 20m 26.7s using pnpm v9.15.9        # 内含一次 ERR_SOCKET_TIMEOUT 自动重试
+$ dsh plugin --profile gitinstall add -w @deepseek-ai/dsh-experimental-agent-team-profile@0.2.0-rc.2
++ @deepseek-ai/dsh-experimental-agent-team-profile 0.2.0-rc.2
+Done in 4.4s
+$ dsh plugin --profile gitinstall add -w github:141w/dsh-quorum
++ dsh-quorum 0.1.0
+Done in 5s
+
+$ node -e "console.log(require('~/.dsh/profiles/gitinstall/package.json').dsh.profile.bundles.join('\\n'))"
+@deepseek-ai/dsh-base
+@deepseek-ai/dsh-web-app
+@deepseek-ai/dsh-experimental-agent-team-profile
+dsh-quorum
+
+$ dsh --profile gitinstall --port 3098 --no-open
+dsh web: http://127.0.0.1:3098/?token=<redacted>
+                              # 没有 "1 entry did not activate"，插件正常挂载
+```
+
+浏览器半也随包发布——带 cookie 抓首页，组合脚本里就有这一项：
+
+```
+$ curl -sL --noproxy '*' -c $J -b $J "http://127.0.0.1:3098/?token=<redacted>" | grep -c "dsh-quorum/client.js"
+1
+```
+
+**一条实际体感**：`@deepseek-ai/dsh-web-app` 这一个 bundle 就要 20 分钟（近 300 个包，且本机直连 registry.npmjs.org 中途超时重试过一次）。README 的安装章节应当明说这一步很慢，别让人以为卡死了。
+
+### 4c. 发布到 npm 被账号策略拦住
+
+```
+$ npm publish --access public
+npm error 403 Forbidden - PUT https://registry.npmjs.org/dsh-quorum
+  - Two-factor authentication or granular access token with bypass 2fa enabled is required to publish packages.
+$ curl -s -o /dev/null -w "%{http_code}\n" https://registry.npmjs.org/dsh-quorum
+404                              # 上传被拒于权限检查，没有任何半成品落库，包名仍空
+```
+
+CLI 网页登录（`npm login --auth-type=web`）拿到的凭据不带 2FA bypass，所以 `npm whoami` 成功不等于能发布。要发必须先在账号上开 2FA 且作用范围含 publishing，或者用带 bypass 的 granular token。**这是账号设置，由她本人操作。**
+
+### 5. 打包面核对
+
+`github:` 安装落地的文件 = `files` 声明，没有多余物：
+
+```
+$ ls ~/.dsh/profiles/gitinstall/node_modules/dsh-quorum/
+LICENSE  README.md  client.js  cordis.patch.yml  docs  index.js  package.json
+```
+
+`.probe/` 与 `HANDOFF-*.md` 不在其中（后者已随 `44ce77d` 从 HEAD 移出）。
+
 ## 已知缺口
 
 1. **拒绝记录无法写进会话日志。** 不是「目前还没写」，而是机制不允许：插件自定义事件类型能写能落盘，但读回来时会被 `KNOWN_SESSION_EVENT_TYPES` 拒绝，且 live `Session.append()` 无法设置 `ignorable` 标记，代价是整个会话永久打不开（见上方纪律 D 实验）。审计要持久，必须换载体；`ctx.logger` 在本机构建里没有任何可见出口。

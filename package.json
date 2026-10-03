@@ -1,7 +1,7 @@
 {
   "name": "dsh-quorum",
   "version": "0.1.0",
-  "description": "Mechanism-enforced discipline layer for DeepSeek Harness agent teams: role capabilities, task shape gating, and cost budgets.",
+  "description": "Mechanism-enforced discipline layer for DeepSeek Harness agent teams: role cards, quorum termination, evidence-gated reports and cost budgets.",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -38,5 +38,29 @@
       ],
       "immediately": false
     }
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "dsh-bundle",
+    "deepseek-harness",
+    "cordis",
+    "agent-teams",
+    "multi-agent",
+    "governance",
+    "budget",
+    "quorum"
+  ],
+  "author": "Weiqi Wang",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/141w/dsh-quorum.git"
+  },
+  "bugs": {
+    "url": "https://github.com/141w/dsh-quorum/issues"
+  },
+  "homepage": "https://github.com/141w/dsh-quorum#readme",
+  "publishConfig": {
+    "access": "public"
   }
 }
