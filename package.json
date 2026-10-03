@@ -1,0 +1,26 @@
+{
+  "name": "dsh-quorum",
+  "version": "0.1.0",
+  "description": "Mechanism-enforced discipline layer for DeepSeek Harness agent teams: role capabilities, task shape gating, and cost budgets.",
+  "type": "module",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md",
+    "docs"
+  ],
+  "scripts": {
+    "build": "node --check index.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

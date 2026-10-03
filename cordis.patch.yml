@@ -1,0 +1,48 @@
+- insert:
+    - id: quorum
+      name: dsh-quorum
+      config:
+        # A teammate's role is resolved from its durable Team name, so a role card
+        # binds to identity rather than to whatever the prompt happens to say.
+        # `lead` is the reserved key for the Team Lead itself.
+        roles:
+          lead:
+            shape: ship
+            writeScopes: []
+            # Budget enforcement bites the Lead, because only the Lead can spawn.
+            maxMembers: 4
+          reviewer:
+            shape: scout
+            allow: [read, read_image, grep, glob, list]
+          fixer:
+            shape: ship
+            writeScopes: ["src/", "tests/"]
+        # Unlisted teammates get this card. `scout` by default: a role nobody
+        # declared is not implicitly trusted to modify the checkout.
+        defaultRole:
+          shape: scout
+          allow: [read, read_image, grep, glob, list]
+        budget:
+          # Billed口径: input + output, excluding the cacheRead term the harness
+          # double-counts inside totalTokens. See docs/architecture.md.
+          maxBilledTokens: 400000
+          # Crossing the soft tier stops new members; crossing the hard tier also
+          # stops writes, forcing the team toward a conclusion.
+          softTier: 0.7
+          hardTier: 0.9
+        quorum:
+          # What `quorum_wait` blocks on. `requires` is the number of teammate
+          # submissions that must have reached the Lead before it reports the
+          # discussion as converged; anything that is not an integer means
+          # "every teammate rostered today, one delivered message each".
+          requires: all
+          # Default deadline for one call, and how long a single wake may sleep
+          # before the mailbox state is re-read. `pollMs` stays >= 10000 because
+          # upstream's change-wait rejects anything shorter.
+          timeoutMs: 300000
+          pollMs: 30000
+        debug:
+          # One line per exempt session at boot. It is the only way to tell
+          # "plain session skipped on purpose" from "the hook never ran", but it
+          # would print for every ordinary session, so it stays opt-in.
+          logExemption: false

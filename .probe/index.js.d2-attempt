@@ -1,0 +1,206 @@
+export const name = 'quorum'
+export const inject = ['tools', 'agentTeams', 'sessions']
+
+const WRITE_TOOLS = new Set(['write', 'edit', 'multiedit'])
+const SPAWN_TOOL = 'spawn_teammate'
+
+/**
+ * Only Team members are policed. A plain session must keep behaving exactly as
+ * before, or installing the bundle would break every unrelated conversation.
+ */
+function resolveCard(ctx, agent, config) {
+  const team = ctx.agentTeams.tryMembership(agent)
+  if (!team) return undefined
+  const key = team.role === 'lead' ? 'lead' : team.name
+  return { teamId: team.id, role: key, card: config.roles[key] ?? config.defaultRole }
+}
+
+function parseArgs(raw) {
+  if (raw === undefined || raw === null) return {}
+  if (typeof raw === 'object') return raw
+  try {
+    return JSON.parse(raw) ?? {}
+  } catch {
+    return {}
+  }
+}
+
+function targetPath(args) {
+  return args.file_path ?? args.path ?? args.notebook_path
+}
+
+function withinScopes(cwd, filePath, scopes) {
+  if (!scopes?.length) return true
+  if (typeof filePath !== 'string') return false
+  const abs = filePath.startsWith('/') ? filePath : `${cwd ?? ''}/${filePath}`
+  const roots = scopes.filter((s) => !s.startsWith('~'))
+  const home = scopes.filter((s) => s.startsWith('~')).map((s) => process.env.HOME + s.slice(1))
+  return [...roots, ...home].some((scope) => abs.includes(scope.replace(/\/$/, '')))
+}
+
+/** totalTokens double-counts cacheRead; bill on the non-overlapping terms. */
+function billedTokens(usage) {
+  if (!usage || typeof usage !== 'object') return 0
+  const input = Number(usage.inputTokens ?? usage.prompt_tokens ?? 0)
+  const output = Number(usage.outputTokens ?? usage.completion_tokens ?? 0)
+  return input + output
+}
+
+function findUsage(node, depth = 0) {
+  if (depth > 5 || node === null || typeof node !== 'object') return 0
+  let total = 0
+  for (const [key, value] of Object.entries(node)) {
+    if (key === 'usage' && value && typeof value === 'object') total += billedTokens(value)
+    else if (value && typeof value === 'object') total += findUsage(value, depth + 1)
+  }
+  return total
+}
+
+/** Keys whose value must be present to be logged — `session.append` rejects undefined. */
+function only(key, value) {
+  return value === undefined ? {} : { [key]: value }
+}
+
+export function apply(ctx, config) {
+  const spend = new Map()
+  const sessionTeam = new Map()
+
+  // PROBE (temporary, env-gated, deleted before delivery): answer whether a
+  // plugin-authored event type survives the session log without a model call.
+  if (process.env.QUORUM_PROBE) {
+    const log = (m) => process.stderr.write(`PROBE ${m}\n`)
+    const probe = ctx.sessions.create(undefined, { meta: { cwd: process.env.QUORUM_PROBE_CWD } })
+    log(`created session ${probe.id}`)
+    try {
+      const ev = probe.append('quorum/binding', { version: 1, role: 'probe', teamId: 'probe' })
+      log(`append OK seq=${ev.seq} type=${ev.type}`)
+    } catch (error) {
+      log(`append THREW: ${error && error.message}`)
+    }
+    Promise.resolve(ctx.sessions.flush(probe)).then(
+      (ok) => log(`flush resolved ok=${ok}`),
+      (error) => log(`flush THREW: ${error && error.message}`)
+    )
+  }
+
+  /**
+   * Audit must never be able to break the call it describes: a failed append
+   * degrades to a warning. It also must not flip a denial into a grant, so this
+   * is called separately from returning the reason.
+   */
+  const audit = (session, type, data) => {
+    try {
+      if (typeof session?.append !== 'function') throw new Error('target session exposes no append()')
+      session.append.bind(session)(type, data)
+    } catch (error) {
+      ctx.logger.warn(`quorum: audit event "${type}" not persisted: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  ctx.on('agent/created', ({ agent }) => {
+    const bound = resolveCard(ctx, agent, config)
+    if (!bound) return
+    sessionTeam.set(agent.session?.id, bound.teamId)
+
+    const deny = (exec, rule, reason, extra) => {
+      audit(agent.session, 'quorum/denial', {
+        version: 1,
+        role: bound.role,
+        tool: exec.name,
+        rule,
+        ...(extra ?? {})
+      })
+      ctx.logger.info(`quorum: denied ${bound.role} ${exec.name} -> ${rule}`)
+      return reason
+    }
+
+    const budgetRatio = () => spend.get(bound.teamId) / config.budget.maxBilledTokens
+    const isLead = bound.role === 'lead'
+
+    agent.ctx.tools.guard((exec) => {
+      const ratio = budgetRatio()
+
+      if (exec.name === SPAWN_TOOL && isLead) {
+        if (ratio >= config.budget.softTier) {
+          return deny(exec, 'budget-soft', `cost budget reached ${Math.round(ratio * 100)}% of ${config.budget.maxBilledTokens} billed tokens; conclude with the members you already have instead of adding another`, { percent: Math.round(ratio * 100) })
+        }
+        const members = ctx.agentTeams.listMembers(agent).filter((m) => m.name !== 'lead')
+        if (members.length >= (bound.card.maxMembers ?? Infinity)) {
+          return deny(exec, 'max-members', `role card caps this team at ${bound.card.maxMembers} members; finish an existing task before claiming another`, { maxMembers: bound.card.maxMembers })
+        }
+      }
+
+      if (WRITE_TOOLS.has(exec.name) && ratio >= config.budget.hardTier) {
+        return deny(exec, 'budget-hard', `cost budget reached ${Math.round(ratio * 100)}%; this team is in report-only mode, summarise what you know and name what remains unverified`, { percent: Math.round(ratio * 100) })
+      }
+
+      if (bound.card.allow?.length && !bound.card.allow.includes(exec.name) && !WRITE_TOOLS.has(exec.name)) {
+        return deny(exec, 'tool-not-granted', `role card "${bound.role}" is not granted the ${exec.name} tool`)
+      }
+
+      if (WRITE_TOOLS.has(exec.name)) {
+        if (bound.card.shape === 'scout') {
+          return deny(exec, 'scout-read-only', `role card "${bound.role}" has shape=scout, which is read-only by construction; report your finding as a message to the lead instead of editing files`)
+        }
+        const path = targetPath(parseArgs(exec.arguments))
+        if (!withinScopes(agent.session?.cwd ?? agent.session?.header?.cwd, path, bound.card.writeScopes)) {
+          return deny(exec, 'outside-write-scope', `path ${path} is outside the write scopes [${bound.card.writeScopes.join(', ')}] granted to role card "${bound.role}"`, only('path', path))
+        }
+      }
+    })
+
+    audit(agent.session, 'quorum/binding', {
+      version: 1,
+      role: bound.role,
+      teamId: bound.teamId,
+      ...only('shape', bound.card.shape),
+      ...only('allow', bound.card.allow && [...bound.card.allow]),
+      ...only('writeScopes', bound.card.writeScopes && [...bound.card.writeScopes])
+    })
+
+    ctx.logger.info(`quorum: bound role card "${bound.role}" (shape=${bound.card.shape}) to a new agent`)
+  })
+
+  ctx.on('session/event', (session, event) => {
+    if (event?.type !== 'assistant/message') return
+    const teamId = sessionTeam.get(session?.id)
+    if (!teamId) return
+    const billed = findUsage(event.data)
+    if (!billed) return
+    const next = (spend.get(teamId) ?? 0) + billed
+    const before = (spend.get(teamId) ?? 0) / config.budget.maxBilledTokens
+    spend.set(teamId, next)
+    if (before < config.budget.softTier && next / config.budget.maxBilledTokens >= config.budget.softTier) {
+      ctx.logger.info(`quorum: team reached ${Math.round(next / config.budget.maxBilledTokens * 100)}% of its billed-token budget; new members are now blocked`)
+    }
+  })
+
+  // PROBE2 (temporary): exercise the real audit payload on a live agent session.
+  if (process.env.QUORUM_PROBE) {
+    const log2 = (m) => process.stderr.write(`PROBE2 ${m}\n`)
+    ctx.on('agent/created', ({ agent }) => {
+      const team = ctx.agentTeams.tryMembership(agent)
+      if (!team) return
+      log2(`agent/created session=${agent.session?.id} role=${team.role} name=${team.name} id=${typeof team.id}:${String(team.id).slice(0, 48)} rootIsAgent=${typeof team.root}`)
+      const bound = resolveCard(ctx, agent, config)
+      const payload = {
+        version: 1,
+        role: bound.role,
+        teamId: bound.teamId,
+        ...only('shape', bound.card.shape),
+        ...only('allow', bound.card.allow && [...bound.card.allow]),
+        ...only('writeScopes', bound.card.writeScopes && [...bound.card.writeScopes])
+      }
+      try {
+        const ev = agent.session.append.bind(agent.session)('quorum/binding', payload)
+        log2(`real-payload append OK seq=${ev.seq}`)
+      } catch (error) {
+        log2(`real-payload append THREW: ${error && error.message}`)
+      }
+      Promise.resolve(ctx.sessions.flush(agent.session)).then(
+        (ok) => log2(`flush real session ok=${ok}`),
+        (error) => log2(`flush real session THREW: ${error && error.message}`)
+      )
+    })
+  }
+}

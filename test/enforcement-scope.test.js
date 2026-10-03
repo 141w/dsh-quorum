@@ -1,0 +1,183 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { apply } from '../index.js'
+
+// The stub mirrors upstream semantics read from dsh-experimental-agent-team/lib/index.js:
+// tryMembership (397-427) resolves *any* agent without a live roster entry to
+// {root: self, role: 'lead'}, and list (436-466) always prepends the Lead pseudo-row.
+// A team of one is therefore indistinguishable from a plain session by role alone, so
+// these tests pin the exemption to roster size rather than to the lead card's leniency.
+const CONFIG = {
+  roles: {
+    lead: { shape: 'ship', writeScopes: [], maxMembers: 4 },
+    reviewer: { shape: 'scout', allow: ['read', 'grep'] },
+    fixer: { shape: 'ship', writeScopes: ['src/'] },
+  },
+  defaultRole: { shape: 'scout', allow: ['read'] },
+  budget: { maxBilledTokens: 400000, softTier: 0.7, hardTier: 0.9 },
+}
+
+function harness() {
+  const roster = new Map()
+  const guards = []
+  const sections = []
+  const registrations = []
+  const lines = []
+  const listeners = new Map()
+
+  const ctx = {
+    logger: { info() {}, warn() {} },
+    on(type, fn) {
+      if (!listeners.has(type)) listeners.set(type, [])
+      listeners.get(type).push(fn)
+    },
+    agentTeams: {
+      tryMembership(agent) {
+        const member = (roster.get(agent.parentId) ?? []).find((m) => m.agent === agent)
+        if (member) return { root: agent.parentAgent, id: agent.parentId, role: 'teammate', name: member.name }
+        if (agent.subagent) return undefined
+        return { root: agent, id: agent.id, role: 'lead', name: 'lead' }
+      },
+      listMembers(agent) {
+        const teamId = agent.parentId ?? agent.id
+        return [{ name: 'lead' }, ...(roster.get(teamId) ?? []).map((m) => ({ name: m.name }))]
+      },
+    },
+  }
+
+  const create = (id, opts = {}) => {
+    const self = {
+      id,
+      parentId: opts.parentId,
+      parentAgent: opts.parentAgent,
+      subagent: false,
+      session: { id, cwd: '/work' },
+    }
+    self.ctx = {
+      tools: {
+        guard(fn) { guards.push({ agent: self, fn }) },
+        register(tool) { registrations.push({ agent: self, tool }) },
+      },
+      systemPrompt: { section(s) { sections.push({ agent: self, ...s }) } },
+    }
+    if (opts.parentId) {
+      if (!roster.has(opts.parentId)) roster.set(opts.parentId, [])
+      roster.get(opts.parentId).push({ agent: self, name: opts.name })
+    }
+    return self
+  }
+
+  const emit = (type, payload) => {
+    const original = console.log
+    console.log = (...rest) => lines.push(rest.join(' '))
+    try {
+      for (const fn of listeners.get(type) ?? []) fn(payload)
+    } finally {
+      console.log = original
+    }
+  }
+
+  return { ctx, create, emit, guards, sections, registrations, lines, roster }
+}
+
+test('a plain session (team of one) registers neither guard nor prompt section', () => {
+  const h = harness()
+  apply(h.ctx, CONFIG)
+  h.emit('agent/created', { agent: h.create('lead-1') })
+
+  assert.equal(h.guards.length, 0)
+  assert.equal(h.sections.length, 0)
+  assert.equal(h.registrations.length, 0, 'a plain session must not gain the quorum_wait tool either')
+  assert.deepEqual(h.lines.filter((l) => l.includes('[quorum]')), [], 'silent by default')
+})
+
+test('the exemption line still exists as a switch, proving exempt rather than never-fired', () => {
+  const h = harness()
+  apply(h.ctx, { ...CONFIG, debug: { logExemption: true } })
+  h.emit('agent/created', { agent: h.create('lead-1') })
+
+  // The only `[quorum]` output a plain session can ever produce, and it is opt-in.
+  assert.deepEqual(h.lines, ['[quorum] EXEMPT team-of-one session lead-1'])
+  assert.equal(h.guards.length, 0)
+  assert.equal(h.sections.length, 0)
+  assert.equal(h.registrations.length, 0)
+})
+
+test('the first teammate polices the Lead exactly once, plus itself', () => {
+  const h = harness()
+  apply(h.ctx, CONFIG)
+  const lead = h.create('lead-1')
+  h.emit('agent/created', { agent: lead })
+  assert.equal(h.guards.length, 0, 'nothing is policed before the spawn')
+
+  const reviewer = h.create('child-1', { parentId: 'lead-1', parentAgent: lead, name: 'reviewer' })
+  h.emit('agent/created', { agent: reviewer })
+
+  assert.deepEqual(h.lines.filter((l) => l.includes('policing')), [
+    '[quorum] policing "lead" (ship) team=lead-1',
+    '[quorum] policing "reviewer" (scout) team=lead-1',
+  ])
+  assert.equal(h.guards.filter((g) => g.agent === lead).length, 1)
+  assert.equal(h.sections.length, 2)
+})
+
+test('a second teammate does not re-police the Lead', () => {
+  const h = harness()
+  apply(h.ctx, CONFIG)
+  const lead = h.create('lead-1')
+  const reviewer = h.create('child-1', { parentId: 'lead-1', parentAgent: lead, name: 'reviewer' })
+  h.emit('agent/created', { agent: reviewer })
+  const fixer = h.create('child-2', { parentId: 'lead-1', parentAgent: lead, name: 'fixer' })
+  h.emit('agent/created', { agent: fixer })
+
+  assert.equal(h.guards.filter((g) => g.agent === lead).length, 1)
+  assert.deepEqual(h.lines.filter((l) => l.includes('policing')).map((l) => l.split('"')[1]), ['lead', 'reviewer', 'fixer'])
+})
+
+test('a recreated Lead object gets its own guard (dedupe keys on identity, not id)', () => {
+  const h = harness()
+  apply(h.ctx, CONFIG)
+  const first = h.create('lead-1')
+  h.emit('agent/created', { agent: first })
+  const reviewer = h.create('child-1', { parentId: 'lead-1', parentAgent: first, name: 'reviewer' })
+  h.emit('agent/created', { agent: reviewer })
+
+  const again = h.create('lead-1')
+  h.emit('agent/created', { agent: again })
+
+  assert.equal(h.guards.filter((g) => g.agent === first).length, 1)
+  assert.equal(h.guards.filter((g) => g.agent === again).length, 1)
+})
+
+test('exempting plain sessions did not weaken enforcement: scout denied, lead free', () => {
+  const h = harness()
+  apply(h.ctx, CONFIG)
+  const lead = h.create('lead-1')
+  const reviewer = h.create('child-1', { parentId: 'lead-1', parentAgent: lead, name: 'reviewer' })
+  h.emit('agent/created', { agent: reviewer })
+
+  const scout = h.guards.find((g) => g.agent === reviewer).fn
+  const leadGuard = h.guards.find((g) => g.agent === lead).fn
+
+  assert.match(scout({ name: 'write', arguments: '{"file_path":"/work/review-result.md"}' }), /shape=scout/)
+  assert.match(scout({ name: 'bash' }), /is not granted the bash tool/)
+  assert.equal(scout({ name: 'grep' }), undefined)
+  assert.equal(leadGuard({ name: 'write', arguments: '{"file_path":"/work/calc.py"}' }), undefined)
+})
+
+// The B round of 2026-10-03 deadlocked for exactly one reason: the scout card's
+// allowlist omitted send_message, so the member could never submit and the
+// quorum was unreachable while every test stayed green.
+test('a scout may always report back: allowlists gate mutating tools, not the voice', () => {
+  const h = harness()
+  apply(h.ctx, CONFIG)
+  const lead = h.create('lead-1')
+  const reviewer = h.create('child-1', { parentId: 'lead-1', parentAgent: lead, name: 'reviewer' })
+  h.emit('agent/created', { agent: reviewer })
+  const scout = h.guards.find((g) => g.agent === reviewer).fn
+
+  assert.equal(scout({ name: 'send_message', arguments: '{"target":"lead","message":"done"}' }), undefined)
+  assert.equal(scout({ name: 'present' }), undefined)
+  assert.match(scout({ name: 'write', arguments: '{"file_path":"/work/review-result.md"}' }), /shape=scout/)
+  assert.match(scout({ name: 'bash' }), /is not granted the bash tool/)
+})

@@ -1,0 +1,16 @@
+--- 056e9310-c73b-4a55-9c27-478aeff946d9
+ 6 tool/result  6 tool/call  5 step/start  5 step/end  5 assistant/message  3 user/message  2 agent/inbox/spliced  1 turn/start  1 turn/end  1 system/message  1 subagent/descriptor  1 session/title  1 session  1 sandbox/mode  1 request/header  1 request/context  1 approval/policy
+--- 14a6b7c9-3024-4084-9a08-7ca77fa86fca
+ 4 step/start  4 step/end  4 assistant/message  3 user/message  3 tool/result  3 tool/call  2 agent/inbox/spliced  1 turn/start  1 turn/end  1 system/message  1 subagent/descriptor  1 session/title  1 session  1 sandbox/mode  1 request/header  1 request/context  1 approval/policy
+--- 5a8357c3-1355-4824-9ddc-5c38afc8c8a5
+ 19 step/start  19 step/end  19 assistant/message  18 tool/result  18 tool/call  8 agent/inbox/spliced  6 user/message  4 turn/start  4 turn/end  4 request/header  3 session/end-seed  2 system/message  1 subagent/descriptor  1 session/title  1 session  1 sandbox/mode  1 request/context  1 developer/
+--- bd9211e9-9ecf-4822-bc3d-6ab637318b22
+ 21 tool/result  21 tool/call  18 step/start  18 step/end  18 assistant/message  6 agent/inbox/spliced  5 user/message  1 turn/start  1 turn/end  1 system/message  1 subagent/descriptor  1 session/title  1 session  1 sandbox/mode  1 request/header  1 request/context  1 approval/policy
+--- session-600bf827-c621-4e12-8c9a-74c04c139c66
+ 1 session  1 sandbox/mode  1 permission/preset  1 approval/policy
+--- session-6d8d029f-b9fe-4373-9768-cd9bdd994b0d
+ 1 session  1 sandbox/mode  1 permission/preset  1 approval/policy
+--- session-91e8cfca-f8a8-4a8f-b197-58797554a32b
+ 18 tool/result  18 tool/call  13 step/start  13 step/end  13 assistant/message  8 agent/inbox/spliced  6 user/message  4 team/member  3 todo/write  2 subagent/catalog  1 workspace/changes  1 turn/start  1 turn/end  1 team/message/queued  1 team/message/delivered  1 system/message  1 session/title-l
+--- session-a86ccf90-ccdc-4365-b431-fc1419933cfe
+ 32 step/start  32 step/end  32 assistant/message  31 tool/result  31 tool/call  27 agent/inbox/spliced  16 user/message  10 team/message/queued  10 team/message/delivered  6 team/task  4 turn/start  4 turn/end  4 team/member  3 session/end-seed  2 todo/write  2 subagent/catalog  2 request/header  1

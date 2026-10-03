@@ -1,0 +1,13 @@
+node_modules/
+*.log.tmp
+.DS_Store
+
+# `.probe/` is deliberately NOT ignored: docs/verification.md cites the files
+# inside it (baseline captures and raw boot logs) as the source of its quoted
+# output. Ignoring them would break the evidence chain this repo is built on.
+
+# Raw session transcripts are NOT committed: they contain absolute paths and
+# tool output from a real machine. docs/verification.md cites two of them by
+# name; those citations point at local evidence, not repository content.
+.probe/sessions-pre-D2/
+.probe/91e8-pre.jsonl
