@@ -83,7 +83,7 @@ sleep 12 && cat ~/.qoder-cn/tmp/dsh-boot.log   # 第二行是带 token 的 URL
 
 ## 禁止修改
 
-`~/.dsh/profiles/desktop/`、`~/.dsh/cordis.patch.yml`（home 级，会影响桌面版）、`/Users/wweiqi/Desktop/update plan/Quorum` 整个目录。
+`~/.dsh/profiles/desktop/`、`~/.dsh/cordis.patch.yml`（home 级，会影响桌面版）、`~/Desktop/update plan/Quorum` 整个目录。
 
 ## 交付
 

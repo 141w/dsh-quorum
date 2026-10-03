@@ -1,5 +1,5 @@
 // Member-session event fixtures in the shape decoded from a real session log
-// (`~/.dsh/sessions/--Users-wweiqi-Documents-deepseek-harness-default-workspace--/
+// (`~/.dsh/sessions/--Users-<you>-Documents-deepseek-harness-default-workspace--/
 // 5a8357c3-…/session.v4.jsonl.zstd`, see docs/verification.md D4): the envelope is
 // `{type, seq, time, data}`, a `tool/call` carries `{callId, name, arguments}`, and
 // a `tool/result` carries `data.message.{toolCallId, isError, content}`. Nothing

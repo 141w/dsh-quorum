@@ -4,9 +4,9 @@
 
 ## 你的唯一工作目录（可写）
 
-`/Users/wweiqi/Desktop/update plan/quorum-dsh-plugin`
+`~/Desktop/update plan/quorum-dsh-plugin`
 
-这是一个独立的 dsh 插件仓库。**不要**碰 `/Users/wweiqi/Desktop/update plan/Quorum`（另一个已废弃的 Python 项目，有别的会话未提交改动）。除工作目录外，其余路径一律**只读**。
+这是一个独立的 dsh 插件仓库。**不要**碰 `~/Desktop/update plan/Quorum`（另一个已废弃的 Python 项目，有别的会话未提交改动）。除工作目录外，其余路径一律**只读**。
 
 ## 背景：这是什么产品
 
@@ -68,7 +68,7 @@ sleep 10 && grep -o 'token=[A-Za-z0-9_-]*' ~/.qoder-cn/tmp/dsh-boot.log | tail -
 ```
 
 - 插件改了代码要**重启服务**（HMR 只监视配置，不监视插件代码）。
-- 会话日志在 `~/.dsh/sessions/--Users-wweiqi-Documents-deepseek-harness-default-workspace--/<sessionId>/session.v4.jsonl.zstd`，用 `~/miniconda3/bin/zstd -dc <文件>` 解压成 JSONL 逐行读。
+- 会话日志在 `~/.dsh/sessions/--Users-<you>-Documents-deepseek-harness-default-workspace--/<sessionId>/session.v4.jsonl.zstd`，用 `~/miniconda3/bin/zstd -dc <文件>` 解压成 JSONL 逐行读。
 - 靶子工作区 `~/Documents/deepseek-harness/default-workspace` 是个 git 仓库（`calc.py` 里 `add` 故意写成减法、有 `test_calc.py`、`NOTES.md`）。当前 `calc.py` 已被上一轮改过（`git status` 显示 M），不影响继续测试。
 
 ## 验收标准（按顺序做，第一条不花 token）
@@ -111,7 +111,7 @@ sleep 10 && grep -o 'token=[A-Za-z0-9_-]*' ~/.qoder-cn/tmp/dsh-boot.log | tail -
 
 - `~/.dsh/profiles/desktop/`（桌面 App 拥有它）
 - `~/.dsh/cordis.patch.yml`（home 级，会同时影响桌面版）
-- `/Users/wweiqi/Desktop/update plan/Quorum` 整个目录
+- `~/Desktop/update plan/Quorum` 整个目录
 
 ## 交付
 

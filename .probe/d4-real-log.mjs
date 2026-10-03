@@ -5,7 +5,7 @@
 //
 // Inputs: /tmp/rev.jsonl (teammate "reviewer", 131 events) and /tmp/lead.jsonl
 // (its Lead, 258 events), both produced by:
-//   ~/miniconda3/bin/zstd -dc ~/.dsh/sessions/--Users-wweiqi-Documents-deepseek-harness-default-workspace--/<id>/session.v4.jsonl.zstd
+//   ~/miniconda3/bin/zstd -dc ~/.dsh/sessions/--Users-<you>-Documents-deepseek-harness-default-workspace--/<id>/session.v4.jsonl.zstd
 import { readFileSync } from 'node:fs'
 import { judgeEvidence } from '../index.js'
 

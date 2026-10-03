@@ -96,7 +96,7 @@ agent/created role=reviewer
 ### 原始证据 1：写路径接受自定义事件类型（2026-10-03 15:31）
 
 ```
-$ QUORUM_PROBE=1 QUORUM_PROBE_CWD=/Users/wweiqi/Documents/deepseek-harness/default-workspace \
+$ QUORUM_PROBE=1 QUORUM_PROBE_CWD=~/Documents/deepseek-harness/default-workspace \
     nohup dsh --profile quorum --port 3097 --no-open > ~/.qoder-cn/tmp/dsh-boot.log 2>&1 &
 $ cat ~/.qoder-cn/tmp/dsh-boot.log
 PROBE created session session-1
@@ -113,7 +113,7 @@ PROBE2 flush real session ok=true
 真实 D2 代码路径落盘的行（不是探针写的，是 `agent/created` 里那次 `audit()` 写的）：
 
 ```
-$ cd ~/.dsh/sessions/--Users-wweiqi-Documents-deepseek-harness-default-workspace--/session-91e8cfca-f8a8-4a8f-b197-58797554a32b
+$ cd ~/.dsh/sessions/--Users-<you>-Documents-deepseek-harness-default-workspace--/session-91e8cfca-f8a8-4a8f-b197-58797554a32b
 $ ~/miniconda3/bin/zstd -dc session.v4.jsonl.zstd | grep quorum
 {"type":"quorum/binding","seq":112,"time":1791012679952,"data":{"version":1,"role":"lead","teamId":"session-91e8cfca-f8a8-4a8f-b197-58797554a32b","shape":"ship","writeScopes":[]}}
 {"type":"quorum/binding","seq":113,"time":1791012679953,"data":{"version":1,"role":"lead","teamId":"session-91e8cfca-f8a8-4a8f-b197-58797554a32b","shape":"ship","writeScopes":[]}}
@@ -126,7 +126,7 @@ $ ~/miniconda3/bin/zstd -dc session.v4.jsonl.zstd | grep quorum
 UI 页面文本原文：
 
 ```
-历史加载失败：failed to observe session "session-91e8cfca-f8a8-4a8f-b197-58797554a32b": session "session-91e8cfca-f8a8-4a8f-b197-58797554a32b" contains event type "quorum/binding" (seq 112) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: /Users/wweiqi/.dsh/sessions/--Users-wweiqi-Documents-deepseek-harness-default-workspace--/session-91e8cfca-f8a8-4a8f-b197-58797554a32b/session.v4.jsonl.zstd)（gateway/internal）
+历史加载失败：failed to observe session "session-91e8cfca-f8a8-4a8f-b197-58797554a32b": session "session-91e8cfca-f8a8-4a8f-b197-58797554a32b" contains event type "quorum/binding" (seq 112) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: ~/.dsh/sessions/--Users-<you>-Documents-deepseek-harness-default-workspace--/session-91e8cfca-f8a8-4a8f-b197-58797554a32b/session.v4.jsonl.zstd)（gateway/internal）
 ```
 
 正文区全空，整段历史不可读。**第二次重启时插件代码已回退成完全不写自定义事件，报错原样复现**——拒绝是存储日志的属性，不是运行时状态：一次写入即永久失效，且没有任何降级路径可走（`try/catch` 只能保住工具调用，保不住已经写进去的那一行）。
@@ -247,7 +247,7 @@ dsh web: http://127.0.0.1:3097/?token=NEwOt…
 $ cd ~ && pkill -f "dsh --profile quorum"; sleep 2
 $ nohup dsh --profile quorum --port 3097 --no-open > ~/.qoder-cn/tmp/dsh-boot.log 2>&1 &
 $ cat ~/.qoder-cn/tmp/dsh-boot.log
-dsh web: http://127.0.0.1:3097/?token=C24fga0b4kgL4JXnTla4ki8AQ-cVhL7E8HkBRvhd8fo
+dsh web: http://127.0.0.1:3097/?token=<redacted>
 [quorum] policing "lead" (ship) team=session-a86ccf90-ccdc-4365-b431-fc1419933cfe
 ```
 
@@ -361,7 +361,7 @@ ok 12 - the Lead gains quorum_wait exactly once, a teammate gains nothing, and t
 $ cd ~ && pkill -f "dsh --profile quorum"; sleep 2
 $ nohup dsh --profile quorum --port 3097 --no-open > …/.probe/boot-d3b.log 2>&1 &
 $ sleep 14 && cat …/.probe/boot-d3b.log
-dsh web: http://127.0.0.1:3097/?token=P9DMsxi1jfOPQTMg-JFOUIGijAiZTmprxTI9YICSeWM
+dsh web: http://127.0.0.1:3097/?token=<redacted>
 [quorum] policing "lead" (ship) team=session-a86ccf90-ccdc-4365-b431-fc1419933cfe
 [quorum] EXEMPT team-of-one session session-de1d78f3-c7ec-4016-9cd2-cb3e33be0a51
 ```
@@ -383,7 +383,7 @@ $ cat …/.probe/boot-d3b-probe.log
 这个会话的落盘日志里是 10 条 queued + 10 条 delivered（解码原文见下），其中 **5 条是 Lead 自己发出去的**。判定结果 `deliveredCount=2`：按人计数而不是按条计数，且 Lead 的出站消息没有一条被误算成成员提交。两个成员的 `status:"inactive"` 被原样上报，**没有**被翻译成失败。
 
 ```
-$ ~/miniconda3/bin/zstd -dc ~/.dsh/sessions/--Users-wweiqi-Documents-deepseek-harness-default-workspace--/session-a86ccf90-…/session.v4.jsonl.zstd \
+$ ~/miniconda3/bin/zstd -dc ~/.dsh/sessions/--Users-<you>-Documents-deepseek-harness-default-workspace--/session-a86ccf90-…/session.v4.jsonl.zstd \
     | grep '"type":"team/message' | (按 seq 列出 senderName / senderId / targetId / messageId)
 32  queued     senderName=reviewer  senderId=5a8357c3-1355  targetId=session-a86cc  id=7d5ac3fb
 39  delivered  messageId=7d5ac3fb  targetId=session-a86cc
@@ -404,7 +404,7 @@ $ ~/miniconda3/bin/zstd -dc ~/.dsh/sessions/--Users-wweiqi-Documents-deepseek-ha
 
 ```
 $ pkill -f "dsh --profile quorum"; sleep 2; nohup dsh --profile quorum --port 3097 --no-open > …/.probe/boot-d3b-final.log 2>&1 &
-dsh web: http://127.0.0.1:3097/?token=6q3UAeHfKZ38wjAtLIWSKmYKU9onx5lMiTanYOMRyX8
+dsh web: http://127.0.0.1:3097/?token=<redacted>
 [quorum] EXEMPT team-of-one session session-de1d78f3-c7ec-4016-9cd2-cb3e33be0a51
 [quorum] policing "lead" (ship) team=session-a86ccf90-ccdc-4365-b431-fc1419933cfe
 ```
@@ -436,7 +436,7 @@ $ dsh --profile quorum --dump-config | grep -A 3 "debug:"
 改回交付态并重启，最后一次全绿：
 ```
 $ cat …/.probe/boot-d3c-shipped.log
-dsh web: http://127.0.0.1:3097/?token=AF7eksqWBmXciN2up_bcM-x4yZlhsJE87H_LT86cyKk
+dsh web: http://127.0.0.1:3097/?token=<redacted>
 [quorum] policing "lead" (ship) team=session-a86ccf90-ccdc-4365-b431-fc1419933cfe
 
 $ dsh --profile quorum --dump-config | grep -A 3 "debug:"
@@ -561,7 +561,7 @@ ok 25 - the Lead gains quorum_wait exactly once, a teammate gains nothing, and t
 ```
 $ QUORUM_EVIDENCE_PROBE=1 nohup dsh --profile quorum --port 3097 --no-open > ~/.qoder-cn/tmp/dsh-d4-probe.log 2>&1 &
 $ cat ~/.qoder-cn/tmp/dsh-d4-probe.log
-dsh web: http://127.0.0.1:3097/?token=Df_SXddpvkepUe8H_uXY6cxQnmUDJ696KnGBGu8EHko
+dsh web: http://127.0.0.1:3097/?token=<redacted>
 [quorum] PROBE reviewer live=false landed=3 -> {"status":"unverifiable","detail":"member session 5a8357c3-1355-4824-9ddc-5c38afc8c8a5 is not loaded in this process, so its log cannot be read"}
 [quorum] PROBE fixer live=false landed=2 -> {"status":"unverifiable","detail":"member session bd9211e9-9ecf-4822-bc3d-6ab637318b22 is not loaded in this process, so its log cannot be read"}
 [quorum] policing "lead" (ship) team=session-a86ccf90-ccdc-4365-b431-fc1419933cfe
@@ -592,7 +592,7 @@ inherited-prefix control (drop every tool/result from own events): {"status":"un
 $ cd ~ && pkill -f "dsh --profile quorum"; sleep 3
 $ nohup dsh --profile quorum --port 3097 --no-open > ~/.qoder-cn/tmp/dsh-d4-shipped.log 2>&1 &
 $ sleep 14 && cat ~/.qoder-cn/tmp/dsh-d4-shipped.log
-dsh web: http://127.0.0.1:3097/?token=XYPIHmpyjB-9KSgDQt3R0QCtRzGvR8M6rf6AOQKxGXM
+dsh web: http://127.0.0.1:3097/?token=<redacted>
 [quorum] policing "lead" (ship) team=session-a86ccf90-ccdc-4365-b431-fc1419933cfe
 [quorum] policing "lead" (ship) team=session-60c1e21c-9ecf-4593-a91b-1818a36dad8d
 

@@ -48,13 +48,13 @@ nohup dsh --profile quorum --port 3097 --no-open > ~/.qoder-cn/tmp/dsh-d4.log 2>
 sleep 13 && cat ~/.qoder-cn/tmp/dsh-d4.log      # 第一行是带 token 的 URL
 ```
 
-会话日志：`~/.dsh/sessions/--Users-wweiqi-Documents-deepseek-harness-default-workspace--/<id>/session.v4.jsonl.zstd`，用 `~/miniconda3/bin/zstd -dc` 解压。靶子工作区 `~/Documents/deepseek-harness/default-workspace`（git 仓库，`calc.py` 的 `add` 现为正确实现，`test_calc.py` 2 passed）。
+会话日志：`~/.dsh/sessions/--Users-<you>-Documents-deepseek-harness-default-workspace--/<id>/session.v4.jsonl.zstd`，用 `~/miniconda3/bin/zstd -dc` 解压。靶子工作区 `~/Documents/deepseek-harness/default-workspace`（git 仓库，`calc.py` 的 `add` 现为正确实现，`test_calc.py` 2 passed）。
 
 浏览器写入注意：dsh 输入框是 contenteditable，`fill` 无效；用 `evaluate_script` + `execCommand('insertText')`，且**必须先「新建会话」再插入**，状态更新是异步的要复查一次。**在一个被反复操作过的 composer 上会失效——失效就重新 navigate 拿干净页面，别硬重试。**
 
 ## 禁止
 
-改 `~/.dsh/profiles/desktop/`、home 级 `~/.dsh/cordis.patch.yml`、`/Users/wweiqi/Desktop/update plan/Quorum` 整个目录。用**改名**隔离坏会话（dsh 校验目录名==header id，改名会制造 corrupt 并连带 4 个条目不激活）。大文件一次性 `Write`（会被权限层以「内容截断」拦，拆小 Write + Edit 可通过）。
+改 `~/.dsh/profiles/desktop/`、home 级 `~/.dsh/cordis.patch.yml`、`~/Desktop/update plan/Quorum` 整个目录。用**改名**隔离坏会话（dsh 校验目录名==header id，改名会制造 corrupt 并连带 4 个条目不激活）。大文件一次性 `Write`（会被权限层以「内容截断」拦，拆小 Write + Edit 可通过）。
 
 ## 交付
 

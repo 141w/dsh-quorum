@@ -44,11 +44,11 @@ nohup dsh --profile quorum --port 3097 --no-open > ~/.qoder-cn/tmp/dsh-boot.log 
 sleep 12 && head -1 ~/.qoder-cn/tmp/dsh-boot.log    # 带 token 的 URL 在第一行
 ```
 
-插件代码改动要重启（HMR 只监视配置）。会话日志：`~/.dsh/sessions/--Users-wweiqi-Documents-deepseek-harness-default-workspace--/<id>/session.v4.jsonl.zstd`，用 `~/miniconda3/bin/zstd -dc` 解。靶子工作区 `~/Documents/deepseek-harness/default-workspace`（git 仓库，`calc.py` 里 `add` 是减法，有 `test_calc.py`）。
+插件代码改动要重启（HMR 只监视配置）。会话日志：`~/.dsh/sessions/--Users-<you>-Documents-deepseek-harness-default-workspace--/<id>/session.v4.jsonl.zstd`，用 `~/miniconda3/bin/zstd -dc` 解。靶子工作区 `~/Documents/deepseek-harness/default-workspace`（git 仓库，`calc.py` 里 `add` 是减法，有 `test_calc.py`）。
 
 ## 禁止
 
-- 改 `~/.dsh/profiles/desktop/`、home 级 `~/.dsh/cordis.patch.yml`、`/Users/wweiqi/Desktop/update plan/Quorum` 整个目录。
+- 改 `~/.dsh/profiles/desktop/`、home 级 `~/.dsh/cordis.patch.yml`、`~/Desktop/update plan/Quorum` 整个目录。
 - 用**改名**方式隔离坏会话：dsh 校验目录名必须等于 header 里的 session id，改名会制造 corrupt 并让 `workspaceRegistry` 初始化失败、连带 4 个条目不激活。要移出整个扫描路径（现有坏会话在 `~/dsh-quarantine/`）。
 - 大文件一次性 `Write`：这个目录下 ~150 行的 Write 会被权限层以「内容截断」为由拦下（实际未截断）。**拆成小 Write + Edit** 可以通过。
 
