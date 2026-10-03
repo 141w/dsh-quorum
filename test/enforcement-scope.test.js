@@ -69,11 +69,13 @@ function harness() {
     return self
   }
 
-  const emit = (type, payload) => {
+  // Listeners take positional arguments (`session/event` is `(session, event)`),
+  // so emit must forward them all rather than a single payload object.
+  const emit = (type, ...args) => {
     const original = console.log
     console.log = (...rest) => lines.push(rest.join(' '))
     try {
-      for (const fn of listeners.get(type) ?? []) fn(payload)
+      for (const fn of listeners.get(type) ?? []) fn(...args)
     } finally {
       console.log = original
     }
@@ -203,4 +205,32 @@ test('arming the Lead also tells the Lead the tool now exists', () => {
   assert.equal(nudges.length, 1, 'exactly one nudge per Lead')
   assert.match(nudges[0].message.content[0].text, /quorum_wait/)
   assert.ok(!h.lines.some((l) => l.includes('nudge failed')), 'no inject call may error')
+})
+
+// Cost was the one discipline with no behavioural coverage: the tiers had never
+// been crossed in any test, so the degrade path was shipped as untested code.
+test('cost tiers degrade in order: stop growing, then stop writing', () => {
+  const h = harness()
+  apply(h.ctx, CONFIG)
+  const lead = h.create('lead-1')
+  h.create('child-1', { parentId: 'lead-1', parentAgent: lead, name: 'reviewer' })
+  h.emit('agent/created', { agent: lead })
+  h.emit('agent/created', { agent: h.roster.get('lead-1')[0].agent })
+  const leadGuard = h.guards.find((g) => g.agent === lead).fn
+
+  // maxBilledTokens 400000: soft 70% = 280000, hard 90% = 360000.
+  assert.equal(leadGuard({ name: 'spawn_teammate' }), undefined, 'free to grow at first')
+  assert.equal(leadGuard({ name: 'write', arguments: '{"file_path":"/work/a.py"}' }), undefined)
+
+  h.emit('session/event', lead.session, {
+    type: 'assistant/message', data: { message: { usage: { inputTokens: 200000, outputTokens: 90000 } } },
+  })
+  assert.match(leadGuard({ name: 'spawn_teammate' }), /cost budget reached 7/, 'soft tier stops growth')
+  assert.equal(leadGuard({ name: 'write', arguments: '{"file_path":"/work/a.py"}' }), undefined, 'soft tier still writes')
+
+  h.emit('session/event', lead.session, {
+    type: 'assistant/message', data: { message: { usage: { inputTokens: 80000, outputTokens: 40000 } } },
+  })
+  assert.match(leadGuard({ name: 'write', arguments: '{"file_path":"/work/a.py"}' }), /report-only mode/, 'hard tier stops writes')
+  assert.match(leadGuard({ name: 'spawn_teammate' }), /cost budget reached 10/, 'past 100% still cannot grow')
 })

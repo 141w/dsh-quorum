@@ -33,12 +33,12 @@ Then start normally (`dsh --profile <name>`) and open the Plugins page — **智
 
 ## What it enforces
 
-| Discipline | Mechanism | Real-machine verified |
+| Discipline | Mechanism | Verification status |
 |---|---|---|
-| **Capability** — a role cannot do what it was not granted | Monotonic per-agent guard at the tool boundary; denials surface as `tool/result` with `isError: true` | ✅ three-path test: scout denied writes, ship denied out-of-scope writes, lead allowed |
-| **Termination** — a discussion is over when submissions arrive | `quorum_wait`, a Lead-only tool that blocks on the durable mailbox (`team/message/queued` minus `delivered`) | ✅ both paths: `NOT met` with actionable guidance, and `met — 1/1` |
-| **Evidence** — a report counts only if it is anchored to a real tool run | Reads the member's own session log via `ctx.sessions.get()` | ⚠️ **unit-tested only (25/25), never run against a live team** |
-| **Cost** — a budget, and graceful degradation when it is hit | Token accounting from `assistant/message` usage events; tiers stop new members, then stop writes | ❌ **implemented but never triggered**; the degrade path is untested code |
+| **Capability** — a role cannot do what it was not granted | Monotonic per-agent guard at the tool boundary; denials surface as `tool/result` with `isError: true` | ✅ live, three-path: scout denied writes, ship denied out-of-scope writes, lead allowed |
+| **Termination** — a discussion is over when submissions arrive | `quorum_wait`, a Lead-only tool that blocks on the durable mailbox (`team/message/queued` minus `delivered`) | ✅ live, both paths: `NOT met` with actionable guidance, and `met — 1/1` |
+| **Evidence** — a report counts only if it is anchored to a real tool run | Reads the member's own session log via `ctx.sessions.get()` | ✅ live: a teammate reported from pure common sense with **zero tool calls** in its log, and the gate refused to count it — verdict `0/1 … backed by tool evidence` |
+| **Cost** — a budget, and graceful degradation when it is hit | Token accounting from `assistant/message` usage events; tiers stop new members, then stop writes | ⚠️ **behaviourally unit-tested across all three tiers, never triggered live** (a live trigger would need ~280K tokens of real work) |
 
 Two design rules that are load-bearing and easy to break:
 
@@ -87,7 +87,9 @@ node --check index.js
 node --test test/*.test.js      # 25 tests
 ```
 
-`docs/verification.md` records raw commands and raw output for every claim above, including the failures. `docs/D2-finding.md` and `docs/D3a-verified.md` document two results that changed the design: plugins **cannot** contribute durable session event types (writing one makes the session permanently unopenable), and the exemption had to be proven by positive evidence rather than by silence.
+Want to try it? **[docs/TESTING.md](docs/TESTING.md)** has six scenarios, each with the exact command to check the durable evidence rather than trusting the assistant's own report.
+
+`docs/verification.md` records raw commands and raw output for every claim above, including the failures. `docs/D2-finding.md`, `docs/D3a-verified.md` and `docs/D5-live-verified.md` document results that changed the design: plugins **cannot** contribute durable session event types (writing one makes the session permanently unopenable), the exemption had to be proven by positive evidence rather than by silence, and a tool armed mid-turn is invisible unless the model is told about it.
 
 ## License
 
