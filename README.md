@@ -40,6 +40,8 @@ Then start normally (`dsh --profile <name>`) and open the Plugins page — **智
 | **Evidence** — a report counts only if it is anchored to a real tool run | Reads the member's own session log via `ctx.sessions.get()` | ✅ live: a teammate reported from pure common sense with **zero tool calls** in its log, and the gate refused to count it — verdict `0/1 … backed by tool evidence` |
 | **Cost** — a budget, and graceful degradation when it is hit | Token accounting from `assistant/message` usage events; tiers stop new members, then stop writes | ⚠️ **behaviourally unit-tested across all three tiers, never triggered live** (a live trigger would need ~280K tokens of real work) |
 
+The header also carries one visible surface: a **Quorum** button beside the official team entry, listing the role cards bound to this Team, each member's phase, and the shared task board with its write-scope warnings. It renders nothing on a session without a Team.
+
 Two design rules that are load-bearing and easy to break:
 
 - **Reporting is a right, not a privilege.** `send_message` and `present` are exempt from `allow` lists. When they were not, a scout could never submit, the quorum was permanently unreachable, **and nothing failed loudly** — 12 green tests did not catch it. Only a live run did.
@@ -70,7 +72,7 @@ debug:       { logExemption: false }
 
 Read these before trusting it. They are all measured, not hypothetical.
 
-- **No user interface.** Every discipline currently reports itself through logs and tool results. The official member panel and task board exist; this plugin's own state (quorum progress, evidence anchoring, budget tier) does not appear anywhere a human would look.
+- **The header panel shows less than the plugin knows.** `client.js` registers one `conversation.session.header.actions` occupant: role cards bound to the durable roster, member phase, the task board and its `writeScopeWarnings`. It does **not** show quorum progress, evidence verdicts or budget tier, because the browser never receives them — the wire face of the `agentTeam` projection is `{members, tasks, failure}` and the mailbox stays server-side. Surfacing those needs a `dsh-api-*`-style remote service, which is the next piece of machinery, not a styling task.
 - **`quorum_wait` never wakes a silent member and never resends.** It waits on durable state only. If a member is inactive, the Lead must `send_message` it and call again — upstream's `wait_agent` explicitly refuses to wake inactive teammates, so this is not a gap we can close honestly.
 - **`writeScopes` is a substring match.** `src/../secrets` walks out of it. It deters model mistakes; it is **not** a security boundary. A real one needs resolved-path comparison.
 - **Overlapping `writeScopes` produce no warning.** Measured: `writeScopeWarnings` stayed `[]` throughout. What actually prevents lost work is a filesystem-level optimistic-concurrency guard (`FS_STALE_VERSION`), not the task board.
@@ -83,9 +85,11 @@ Read these before trusting it. They are all measured, not hypothetical.
 No build step — the plugin is plain ESM with **zero imports**, because a linked package that imports host packages without declaring `peerDependencies` fails to import *silently*.
 
 ```sh
-node --check index.js
-node --test test/*.test.js      # 25 tests
+npm run build                   # node --check index.js && node --check client.js
+npm test                        # 27 tests
 ```
+
+`client.js` is the browser half, declared through `dsh.client` in `package.json` and served as part of the combo bundle. It is plain `React.createElement` with no build step and no dependency beyond the `react` seed word, and it registers dictionaries via `ctx.locale` plus one slot occupant via `ctx.slots.inject`.
 
 Want to try it? **[docs/TESTING.md](docs/TESTING.md)** has six scenarios, each with the exact command to check the durable evidence rather than trusting the assistant's own report.
 

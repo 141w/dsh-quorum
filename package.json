@@ -4,14 +4,21 @@
   "description": "Mechanism-enforced discipline layer for DeepSeek Harness agent teams: role capabilities, task shape gating, and cost budgets.",
   "type": "module",
   "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
   "files": [
     "index.js",
+    "client.js",
     "cordis.patch.yml",
     "README.md",
     "docs"
   ],
   "scripts": {
-    "build": "node --check index.js",
+    "build": "node --check index.js && node --check client.js",
     "test": "node --test test/*.test.js"
   },
   "engines": {
@@ -21,6 +28,15 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ],
+      "immediately": false
     }
   }
 }

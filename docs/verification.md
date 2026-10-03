@@ -615,6 +615,97 @@ $ grep -n "export const inject" index.js
 
 ---
 
+---
+
+## D6：客户端面板——注册进 `conversation.session.header.actions`（2026-10-04 00:2x）
+
+全程 0 token：只重启了一次 dsh web 服务，没有发起任何模型请求。
+
+### 1. 第三方 bundle 要提供浏览器半，硬性条件只有一条被文档漏掉
+
+```
+$ grep -n "declares dsh.client but exports no" \
+    ~/.hermes/node/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-client-modules/lib/index.js
+719:  if (clientRel === void 0) throw new Error(`client-modules: ${packageName} declares dsh.client but exports no "./client" bundle`);
+```
+
+即：`package.json` 里写了 `dsh.client` 就**必须**有 `exports["./client"]`，否则不是降级而是抛错。本仓库据此补了 `exports` 映射与 `files`。`platform` 必须是字符串 `"web"`（第 714 行：非 `web` 直接当作没有浏览器半，静默跳过）。
+
+`dsh.client.inject` 不是「共享实例声明」，是**模块图前置**：列出的行必须先物化。参照官方三个占用同一槽位的包（`client-ui-jobs` / `client-ui-subagent` / `experimental-client-ui-agent-team`），本插件声明：
+
+```json
+"client": { "platform": "web",
+  "inject": ["@deepseek-ai/dsh-api-session-controller","@deepseek-ai/dsh-client-locale","@deepseek-ai/dsh-client-ui-conversation"],
+  "immediately": false }
+```
+
+`react` 不用声明：它是平台 seed word（官方 team 包 `require("react")` 也没列它）。这一点是推断，但被下面的实跑证实——面板渲染出来了，没有 `missed the module table`。
+
+### 2. 挂载证据
+
+```
+$ dsh --profile quorum --port 3097 --no-open        # 无 "N entries did not activate"
+dsh web: http://127.0.0.1:3097/?token=…
+[quorum] policing "lead" (ship) team=session-a86ccf90-…
+```
+
+浏览器侧（`window.__DSH_BOOT__`，条目数 66 → 67）：
+
+```json
+{"rev":"c23837e6a4e7","entryCount":67,
+ "mine":[{"id":"dsh-quorum","inject":["@deepseek-ai/dsh-api-session-controller","@deepseek-ai/dsh-client-locale","@deepseek-ai/dsh-client-ui-conversation"]}]}
+```
+
+控制台只有一条我们自己的日志，无 error/warning：
+
+```
+[dsh-quorum] header action registered        (…/plugins/??…,dsh-quorum/client.js,…&rev=ade40413a94c:123226)
+```
+
+组合 URL 里 `dsh-quorum/client.js` 排在 `@deepseek-ai/dsh-experimental-client-ui-agent-team/client.js` 之后 —— 与 `inject` 前置关系一致。
+
+### 3. 第一版是错的，而且错得「看起来正常」
+
+我最初按服务端 `agentTeam` 状态（`{id, members, tasks, messages, delivered}`）写了「汇报告知 x/N」。它渲染出了 `Quorum 0/2`，格式、本地化、配色全对，**数字是假的**：
+
+```js
+// dsh-experimental-agent-team/lib/types/projection.js:269
+const teamProjectionSchema = z.object({
+    members: z.array(teamMemberProjectionSchema),
+    tasks: z.array(teamTaskViewSchema),
+    failure: z.string().optional(),
+}).strict();
+```
+
+投影到浏览器的 wire view 只有这三项，**mailbox 不下发**。所以 `team.id`、`team.messages`、`team.delivered` 全是 `undefined`：`m.targetId === team.id` 永不成立 → 恒 0；`m.id !== team.id` 永真 → 官方合成的 Lead 行（`{id: rootId, name: 'lead', role: 'lead'}`，同文件 277 行）被当成「未汇报的队友」列了出来。
+
+改成用 `role` 字段区分 Lead/teammate，并删掉一切依赖 mailbox 的展示。现在的真实输出：
+
+```
+trigger: "Quorum 1"          // 1 = 队友数，不是收敛度
+panel  : 本会话：Team Lead / 角色卡 / lead / reviewer 活跃 / （脚注：收敛与证据在服务端判定）
+```
+
+教训与本仓库前面几条同构：**能渲染不等于有数据**。凡是「读一个不存在的字段」的 UI，默认值会把它伪装成合法的 0。
+
+### 4. 交互面实测
+
+面板改为锚在触发器下方（点击时量 `getBoundingClientRect`，因为头部会随窗口宽度回流）：
+
+```json
+{"triggerBottom":39,"panelTop":45,"panelLeft":78,      // 6px 间隙；左边界被 min(innerWidth-436) 夹住
+ "escapeCloses":true,"clickReopens":true,"outsideClickCloses":true,"cssTagged":true}
+```
+
+无团队会话走 `team === undefined → null`：不占头部。
+
+### 5. 这一轮没做的
+
+- 面板没有显示法定人数、证据判定、预算档位——**通道不存在**，不是没画。要做需要 `dsh-api-*` 那样的远程服务对象，属于新增机制。
+- 未验证 zh/en 切换下的排版（当前字典双语齐备，只实测了 zh）。
+- 未验证 `useSessions` 选择器在成员会话（非 Lead）里的表现：`leadOf()` 走 `subagent.address.parentSessionId`，逻辑与官方 team 面板一致，但官方那段代码注释明确说它依赖 `sessions.binding()`，我没有在真成员会话上点过。
+
+
 ## 已知缺口
 
 1. **拒绝记录无法写进会话日志。** 不是「目前还没写」，而是机制不允许：插件自定义事件类型能写能落盘，但读回来时会被 `KNOWN_SESSION_EVENT_TYPES` 拒绝，且 live `Session.append()` 无法设置 `ignorable` 标记，代价是整个会话永久打不开（见上方纪律 D 实验）。审计要持久，必须换载体；`ctx.logger` 在本机构建里没有任何可见出口。
@@ -626,4 +717,4 @@ $ grep -n "export const inject" index.js
 7. **证据门禁的强度上限：一次成功的工具调用 ≠ 结论正确。** 它证的是「成员在汇报之前确实动过真工具」，不证「它的结论与工具输出一致」。口径与能被绕开的三条路径写在 `architecture.md` 的「证据门禁」一节，不在此重复。
 8. **重启会把已达成的法定人数打回 `unverifiable`。** 成员会话不在本进程时读不到日志（D4 第 4 节实测 `live=false`），这是 fail-closed 的选择而非缺陷，但 Lead 侧的后果（重启后要重新催一轮证据）没有被任何机制提醒，只写在返回文本里。
 9. **门禁依赖的两个读面在上游头文件里是 `@deprecated`**（`Session.ownEvents()` / `snapshotEvents()`，注释原文「new calls are prohibited」）。当前无替代同步读面，替代方案是 `dsh-session-query` 那条 SQLite 路，代价是要引一层查询后端依赖；上游若真删这两个方法，本门禁会退化成全部 `unverifiable`（依旧不会放行，但会失去可用性）。
-
+10. **浏览器拿不到 mailbox。** `agentTeam` 的 wire view 是 `{members, tasks, failure}`（`projection.js:269`），法定人数、证据判定、预算档位都无法在客户端直接读出；头部面板因此只展示角色卡与任务板。见 D6 第 3 节——第一版展示过假的 `0/2`。
