@@ -22,6 +22,14 @@ dsh plugin --profile <name> add -w github:141w/dsh-quorum
 
 **The first command is slow, and it is not stuck.** `@deepseek-ai/dsh-web-app` pulls close to 300 packages; measured on this machine it took 20 minutes with one automatic socket-timeout retry. The other two take seconds.
 
+Pin it if you care about what actually runs — upstream's own guidance is to lock the revision, because a later push to the default branch would otherwise change the code that executes at install time:
+
+```sh
+dsh plugin --profile <name> add -w 'github:141w/dsh-quorum#v0.1.0'
+```
+
+Verified: resolves in 7.6s, records `github:141w/dsh-quorum#v0.1.0` in the profile, and `--dump-config` still shows the `# == dsh-quorum` layer.
+
 Installing from a checkout works identically and is what the docs here were verified with:
 
 ```sh
