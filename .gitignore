@@ -11,3 +11,8 @@ node_modules/
 # name; those citations point at local evidence, not repository content.
 .probe/sessions-pre-D2/
 .probe/91e8-pre.jsonl
+
+# Delegation briefs for hand-building this plugin. They record how the work was
+# split across sessions, including judgements that turned out wrong, so they are
+# kept on disk for the next round and not shipped as product documentation.
+HANDOFF-*.md
