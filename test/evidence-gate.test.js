@@ -219,14 +219,40 @@ test('judgeQuorum refuses to run without an evidence resolver', () => {
   )
 })
 
-test('a message id that never appears in the member log still needs a work tool', () => {
+// The gate previously widened in this case: an unlocatable report scanned the WHOLE
+// log for any successful result, so a missing boundary became the cheapest way to pass
+// — work done after the report, or work belonging to an unrelated task, counted. The
+// direction is now fail-closed: the log and the delivery disagree, so the gate refuses
+// rather than answering from the disagreement. Measured live on 2026-10-04: the lenient
+// branch fired in a run whose logs DO contain the submission result.
+test('a message id that never appears in the member log is refused, not widened', () => {
   const verdict = judgeEvidence({
     events: memberLog([{ name: 'bash', text: '2 passed' }, report('team-message-other')]),
     messageIds: [MESSAGE],
   })
-  assert.equal(verdict.status, 'verified')
-  assert.match(verdict.detail, /report not located in its log/)
+  assert.equal(verdict.status, 'unverified', 'a work tool before an unlocatable report is not evidence')
+  assert.match(verdict.detail, /the report cannot be located/)
+  assert.match(verdict.detail, /cannot be split into before\/after/)
 
+  // Even with proof the member ran tools, the boundary is what makes the before/after
+  // split meaningful; without it the same log would also "verify" work done later.
   const silent = judgeEvidence({ events: memberLog([report('team-message-other')]), messageIds: [MESSAGE] })
   assert.equal(silent.status, 'unverified')
+
+  // An empty id list is the protocol-impossible case (a member that is counted as
+  // delivered always named an id) and must not read as verified either.
+  const none = judgeEvidence({ events: memberLog([{ name: 'bash', text: '2 passed' }]), messageIds: [] })
+  assert.equal(none.status, 'unverified')
+  assert.match(none.detail, /any delivered id/)
+})
+
+test('a report that IS located still verifies only the work before it', () => {
+  const verdict = judgeEvidence({
+    events: memberLog([{ name: 'read', text: 'file contents' }, report(MESSAGE), { name: 'bash', text: 'after' }]),
+    messageIds: [MESSAGE],
+  })
+  assert.equal(verdict.status, 'verified')
+  assert.match(verdict.detail, /earliest: read at seq/)
+  assert.doesNotMatch(verdict.detail, /not located/)
+  assert.doesNotMatch(verdict.detail, /after/) // the post-report bash is outside the window
 })

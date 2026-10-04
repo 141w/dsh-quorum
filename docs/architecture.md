@@ -177,7 +177,7 @@ agent/created
 | 失败调用 | `isError === true` 一律不算 | 被角色卡守卫拒掉的 `write`、`FS_STALE_VERSION` 的 `edit` 都在真实日志里出现并被正确排除 |
 | 谁的证据 | 只读 `Session.ownEvents()` | fork 会继承父会话全部历史，祖先的 `read` 不是这个成员的工作。`snapshotEvents()` 会把祖先段一起给出来，所以不用它 |
 | 读不到日志 | `ctx.sessions.get()` 返回 `undefined`、`ownEvents()` 抛错或返回非数组 → `unverifiable` | 不抛给 Lead，也**绝不**判成 verified。fail-closed 的一侧 |
-| 找不到边界 | `messageId` 在成员日志里对不上任何 `send_message` 结果（发送中途被杀、或由别的会话代发）→ 全量窗口内任意成功工具都算 | 边界缺失不该让成员永远无法自证；返回文本会带上 `(report not located in its log)` 提示这一条判定是放宽过的 |
+| 找不到边界 | `messageId` 在成员日志里对不上任何 `send_message` 结果（发送中途被杀、或由别的会话代发）→ **`unverifiable`，不放宽** | 旧口径是「全量窗口内任意成功工具都算」，理由是边界缺失不该让成员永远无法自证。**2026-10-04 真机数据否证了它**：宽容分支在一次日志里确实含提交结果的运行中被触发，说明「找不到边界」可以来自日志与投递状态的不一致，而不是成员无辜。而且它是**最省力的通过路径**——汇报之后干的活、或另一个任务的成功工具，都会被算成证据。判定不得从这种不一致里得出 `verified` |
 
 三种状态在 Lead 读到的文本里必须一眼可分：`reported+verified` / `reported-but-unverified` / `no message yet`（外加 `reported-but-unverifiable` 与 `queued, not delivered yet`）。
 

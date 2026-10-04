@@ -19,6 +19,19 @@ in `package.json` `peerDependencies` and enforced at install time.
   The row is a keyboard-reachable `role="button"`; a member session that has been
   released reports that it cannot be opened rather than swallowing the click.
 
+### Changed
+
+- **The evidence gate no longer widens when it cannot locate a member's report.** If the
+  delivered message id matches no `send_message` result in the member's own log, the
+  verdict is now `unverifiable` instead of scanning the whole log for any successful tool
+  result. The old behaviour made a missing boundary the cheapest way to pass: work done
+  *after* the report, or work belonging to an unrelated task, counted as evidence for it.
+  This is the third instance of the same pattern in this project — leniency resolving an
+  ambiguity into a pass — and it is the one the gate can least afford, because the whole
+  point is that a report is anchored to work that preceded it. Deleting the lenient
+  branch also removed a conditional that became unreachable, so the detail line no longer
+  needs to flag a relaxed judgement.
+
 ### Fixed
 
 - **Two theme tokens in the panel did not exist.** `--dsw-alias-state-warning-primary`

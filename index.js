@@ -181,16 +181,32 @@ export function judgeEvidence({ events, messageIds }) {
   }
 
   const located = boundary !== undefined
-  // An id found in no submission result means the report left no trace in this
-  // log (killed mid-send, or sent by a different session). Everything is then
-  // in-window rather than refusing the quorum outright, and the detail says so.
-  const window = located ? results.filter((entry) => entry.seq < boundary) : results
+  // Without a located report there is no window that means anything, so the gate
+  // refuses instead of widening.
+  //
+  // The earlier reading scanned the WHOLE log in this case, on the reasoning that
+  // "killed mid-send, or sent by a different session" is unusual. But that makes a
+  // missing boundary the cheapest way to pass: any successful tool result anywhere in
+  // the log counts, including work done after the report was sent, and including work
+  // belonging to an unrelated task. The member names its own report id only on paths it
+  // actually took, so an unlocatable id means the log and the delivery disagree — and
+  // the one thing this gate may not do is answer `verified` from that disagreement.
+  // Measured live on 2026-10-04: the lenient branch fired in a run whose logs DO
+  // contain the submission result, which is exactly the ambiguity to refuse.
+  if (!located) {
+    return {
+      status: 'unverified',
+      detail: `${results.length} tool result(s) in its own log, but none is the submission carrying ${messageIds.length ? `id ${messageIds.join(', ')}` : 'any delivered id'}; the report cannot be located, so its log cannot be split into before/after`,
+    }
+  }
+
+  const window = results.filter((entry) => entry.seq < boundary)
   const work = window.filter((entry) => entry.kind === 'work')
 
   if (work.length) {
     return {
       status: 'verified',
-      detail: `${work.length} successful tool result(s) before it reported; earliest: ${work[0].name} at seq ${work[0].seq}${located ? '' : ' (report not located in its log)'}`,
+      detail: `${work.length} successful tool result(s) before it reported; earliest: ${work[0].name} at seq ${work[0].seq}`,
     }
   }
 
@@ -203,7 +219,7 @@ export function judgeEvidence({ events, messageIds }) {
   if (results.some((entry) => entry.kind === 'work') && !work.length) why.push('work tools ran only after the report')
   return {
     status: 'unverified',
-    detail: `${results.length} tool result(s) in its own log, none usable as evidence${located ? ` before seq ${boundary}` : ''}: ${why.join(', ') || 'nothing but the report itself'}`,
+    detail: `${results.length} tool result(s) in its own log, none usable as evidence before seq ${boundary}: ${why.join(', ') || 'nothing but the report itself'}`,
   }
 }
 
