@@ -19,6 +19,14 @@ window.__ModuleLoader__.load({
     const h = React.createElement
 
     const NS = 'quorum'
+
+    // Click-time panel placement needs the panel's width before it is in the DOM.
+    // Reading it back would mean measuring after a render that already put the panel in
+    // the wrong place, so the two numbers the stylesheet uses are named here and the
+    // clamp is derived from them. `.qrm-panel` is `width:min(420px, 100vw - 32px)`, and
+    // PANEL_MARGIN is the 16px it keeps clear of the viewport edge.
+    const PANEL_WIDTH = 420
+    const PANEL_MARGIN = 16
     const zh = {
       trigger: 'Quorum',
       lead: '本会话：Team Lead',
@@ -34,6 +42,7 @@ window.__ModuleLoader__.load({
       phase_active: '活跃',
       phase_provisioning: '准备中',
       phase_failed: '失败',
+      self: '本会话',
       none: '尚无成员',
       note: '面板只镜像投影到浏览器的 Team 记录。汇报收敛与证据判定由服务端 quorum_wait 完成，不经此通道；点成员名可进入它的会话看过程。'
     }
@@ -52,9 +61,19 @@ window.__ModuleLoader__.load({
       phase_active: 'active',
       phase_provisioning: 'provisioning',
       phase_failed: 'failed',
+      self: 'you are here',
       none: 'no members yet',
       note: 'This panel mirrors the Team record the projection publishes to the browser. Report convergence and evidence verdicts are made server-side by quorum_wait; click a member to open its session and watch the work.'
     }
+
+    // An unexpected phase would put the literal string `phase_bogus` on screen. The
+    // same failure shape as the rest of this plugin: never render an unknown state
+    // as if it were a known one. Derive the set from the dictionary itself so it
+    // cannot drift from what the UI can actually say, and so it stays checkable when
+    // `tr` is an identity stub in tests.
+    const PHASES = Object.keys(zh)
+      .filter((key) => key.startsWith('phase_'))
+      .map((key) => key.slice('phase_'.length))
 
     const style = document.createElement('style')
     style.setAttribute('data-plugin-css', 'dsh-quorum')
@@ -189,7 +208,7 @@ window.__ModuleLoader__.load({
         if (box !== undefined) {
           setPos({
             top: box.bottom + 6,
-            left: Math.max(16, Math.min(box.left, window.innerWidth - 436))
+            left: Math.max(PANEL_MARGIN, Math.min(box.left, window.innerWidth - PANEL_WIDTH - PANEL_MARGIN))
           })
         }
         setOpen(true)
@@ -235,6 +254,11 @@ window.__ModuleLoader__.load({
           }
         } : { 'aria-disabled': true }
 
+        // Phase is a value read off the wire, not a closed set the browser enforces,
+        // so an unexpected one would put the literal string `phase_bogus` on screen.
+        const knownPhase = PHASES.includes(member.phase)
+        const phaseLabel = tr('phase_' + member.phase)
+
         return h('div', {
           className: 'qrm-row',
           key: member.id,
@@ -249,8 +273,12 @@ window.__ModuleLoader__.load({
           ),
           h('span', { className: 'qrm-meta' },
             member.role === 'lead'
-              ? null
-              : h('span', { className: 'qrm-phase' }, tr('phase_' + member.phase)),
+              // The Lead row has no dot and no phase, so without this it showed a bare
+              // name next to rows that carry state — the one row in the roster that read
+              // as unfinished. It is not openable because you are already in it, and
+              // this label is where that is said.
+              ? h('span', { className: 'qrm-phase' }, tr('self'))
+              : h('span', { className: 'qrm-phase' }, knownPhase ? phaseLabel : '—'),
             member.phase === 'failed'
               ? h('span', { className: 'qrm-chip', 'data-state': 'bad' }, member.error ?? tr('phase_failed'))
               : null,

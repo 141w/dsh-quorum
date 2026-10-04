@@ -32,7 +32,7 @@ const SOURCE = readFileSync(join(ROOT, 'client.js'), 'utf8')
  * reads a value the test installs. That is enough to drive the component's render
  * path and its event handlers, which is what these assertions are about.
  */
-function makeHarness({ team, binding, sessions }) {
+function makeHarness({ team, binding, sessions, box = { bottom: 40, left: 100 } }) {
   const effects = []
   let sessionStore = { projectionsBySession: {} }
   const hookState = []
@@ -52,7 +52,7 @@ function makeHarness({ team, binding, sessions }) {
       if (!(at in hookState)) hookState[at] = { current: initial }
       // The panel measures the trigger at click time to place itself under it.
       if (hookState[at].current === null && initial === null) {
-        hookState[at].current = { getBoundingClientRect: () => ({ bottom: 40, left: 100 }) }
+        hookState[at].current = { getBoundingClientRect: () => box }
       }
       return hookState[at]
     },
@@ -91,6 +91,9 @@ function makeHarness({ team, binding, sessions }) {
   // The module loader is the browser's; give it one that just calls the factory.
   let exported = null
   globalThis.window = {
+    // The panel clamps itself against the viewport, so the stub needs a real width.
+    innerWidth: 1280,
+    innerHeight: 800,
     __ModuleLoader__: {
       load: ({ factory }) => { exported = factory((name) => (name === 'react' ? React : {})) },
     },
@@ -359,6 +362,95 @@ test('an empty roster says so instead of rendering an empty section', () => {
   // The harness's `tr` is an identity stub, so this asserts the dictionary KEY was
   // passed through — the copy itself is pinned by the dictionaries.
   assert.equal(none.children[0], 'none')
+})
+
+test('the Lead row says you are in it, instead of showing nothing at all', () => {
+  // Every teammate row carries a dot and a phase. The Lead row deliberately has neither
+  // — it is the session you are already in, so a status would be meaningless and the row
+  // is not a link. Without a label that left it a bare name beside rows that carry state,
+  // which is the one thing in the roster that read as unfinished.
+  const h = makeHarness({ team: TEAM, binding: () => undefined, sessions: {} })
+  h.exported.apply(h.ctx)
+  h.setSessionStore({ projectionsBySession: { 'lead-1': { values: { agentTeam: TEAM } } } })
+  const tree = h.open()
+
+  const rows = []
+  const collect = (node) => {
+    if (!node || typeof node !== 'object') return
+    if (Array.isArray(node)) return node.forEach(collect)
+    if (node.props?.className === 'qrm-row') rows.push(node)
+    ;(node.children ?? []).forEach(collect)
+  }
+  collect(tree)
+
+  const labelIn = (row) => find(row, (node) => node.props?.className === 'qrm-phase')
+  const [lead, reviewer] = rows
+  // The harness's `tr` is an identity stub, so these assert the dictionary KEY.
+  assert.equal(labelIn(lead).children[0], 'self', 'the Lead row is labelled as the current session')
+  assert.equal(labelIn(reviewer).children[0], 'phase_active', 'a teammate still shows its phase')
+  assert.equal(find(lead, (node) => node.props?.className === 'qrm-go'), undefined,
+    'and the Lead row still does not advertise navigation')
+})
+
+test('an unknown phase is not printed as a raw dictionary key', () => {
+  // The projection's phase is typed `provisioning | active | failed`, but it is a value
+  // read off the wire. `tr('phase_' + phase)` for anything else yields nothing, and the
+  // panel would have rendered the literal string `phase_bogus` to the user.
+  const odd = { members: [member('lead-1', 'lead', 'lead', 'active'), member('child-1', 'reviewer', 'teammate', 'bogus')], tasks: [] }
+  const h = makeHarness({ team: odd, binding: () => undefined, sessions: {} })
+  h.exported.apply(h.ctx)
+  h.setSessionStore({ projectionsBySession: { 'lead-1': { values: { agentTeam: odd } } } })
+  const tree = h.open()
+
+  const labels = []
+  const collect = (node) => {
+    if (!node || typeof node !== 'object') return
+    if (Array.isArray(node)) return node.forEach(collect)
+    if (node.props?.className === 'qrm-phase') labels.push(node.children[0])
+    ;(node.children ?? []).forEach(collect)
+  }
+  collect(tree)
+
+  assert.deepEqual(labels, ['self', '—'], 'an unrecognised phase degrades to a dash, never to the key')
+})
+
+test('the phase guard covers every phase the wire can carry', () => {
+  // PHASES is derived from the dictionary, so the guard and the strings can never
+  // disagree — but that also means a dictionary that lost a key would silently stop
+  // warning about that phase. The projection's own type is the third opinion: it names
+  // exactly three. Assert all three are still known.
+  const source = readFileSync(join(ROOT, 'client.js'), 'utf8')
+  const guard = source.match(/const PHASES = [\s\S]*?\.slice\('phase_'\.length\)\)/)
+  assert.ok(guard, 'PHASES must be derived from the dictionary, not hand-listed')
+
+  const dictionary = source.slice(source.indexOf('const zh = {'), source.indexOf('const en = {'))
+  for (const phase of ['provisioning', 'active', 'failed']) {
+    assert.ok(dictionary.includes(`phase_${phase}:`), `the dictionary lost phase_${phase}`)
+  }
+})
+
+test('the panel is kept inside the viewport, not just near the trigger', () => {
+  // The popover is positioned at click time from the trigger's measured box, and the
+  // clamp used to be a bare `window.innerWidth - 436` — the panel's declared 420px plus
+  // its 16px margin, written as one number that nothing derived from the stylesheet. It
+  // is now `PANEL_WIDTH`/`PANEL_MARGIN`. This pins the arithmetic: a trigger near the
+  // right edge must not push the panel off screen.
+  const h = makeHarness({
+    team: TEAM, binding: () => undefined, sessions: {}, box: { bottom: 40, left: 5_000 }
+  })
+  h.exported.apply(h.ctx)
+  h.setSessionStore({ projectionsBySession: { 'lead-1': { values: { agentTeam: TEAM } } } })
+  const tree = h.open({ })
+
+  const panel = find(tree, (node) => node.props?.className === 'qrm-panel')
+  const innerWidth = globalThis.window?.innerWidth
+  assert.equal(typeof panel.props.style.left, 'number', 'the panel is placed by measurement')
+  assert.ok(panel.props.style.left >= 16, 'never past the left edge')
+  if (typeof innerWidth === 'number') {
+    assert.ok(panel.props.style.left + 420 + 16 <= innerWidth,
+      'and its declared width plus margin still fits inside the viewport')
+  }
+  assert.equal(panel.props.style.top, 46, 'it hangs 6px below the trigger')
 })
 
 // ── tokens ────────────────────────────────────────────────────────────────────
