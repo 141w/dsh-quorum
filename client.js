@@ -34,6 +34,7 @@ window.__ModuleLoader__.load({
       phase_active: '活跃',
       phase_provisioning: '准备中',
       phase_failed: '失败',
+      none: '尚无成员',
       note: '面板只镜像投影到浏览器的 Team 记录。汇报收敛与证据判定由服务端 quorum_wait 完成，不经此通道；点成员名可进入它的会话看过程。'
     }
     const en = {
@@ -51,35 +52,56 @@ window.__ModuleLoader__.load({
       phase_active: 'active',
       phase_provisioning: 'provisioning',
       phase_failed: 'failed',
+      none: 'no members yet',
       note: 'This panel mirrors the Team record the projection publishes to the browser. Report convergence and evidence verdicts are made server-side by quorum_wait; click a member to open its session and watch the work.'
     }
 
     const style = document.createElement('style')
     style.setAttribute('data-plugin-css', 'dsh-quorum')
     style.textContent = [
-      '.qrm-trigger{min-height:28px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:0;border-radius:6px;align-items:center;gap:5px;padding:3px 7px;font-size:12px;display:inline-flex}',
-      '.qrm-trigger:hover,.qrm-trigger:focus-visible{color:var(--dsw-alias-label-primary)}',
-      '.qrm-count{color:var(--dsw-alias-label-caption);font-variant-numeric:tabular-nums;font-weight:400}',
-      '.qrm-panel{box-sizing:border-box;width:min(420px,calc(100vw - 32px));max-height:min(560px,calc(100vh - 96px));overflow:auto;position:fixed;z-index:120;display:flex;flex-direction:column;gap:8px;padding:14px 16px 16px;border-radius:12px;box-shadow:var(--dsw-elevation-prominent);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5}',
-      '.qrm-head{font-size:13px;font-weight:600}',
-      '.qrm-section{font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary);margin-top:4px}',
-      '.qrm-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;border-top:.5px solid var(--dsw-alias-border-l2)}',
+      // Trigger: matches the neighbouring header actions, but the member count is a
+      // badge rather than a whisper, because the count is the only thing this panel
+      // says before you open it.
+      '.qrm-trigger{min-height:28px;min-width:86px;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:0;border-radius:var(--dsw-radius-sm);align-items:center;justify-content:center;gap:6px;padding:3px 8px;font-size:12px;display:inline-flex;transition:background .12s ease,color .12s ease}',
+      '.qrm-trigger:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+      '.qrm-trigger:focus-visible{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary);outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:1px}',
+      '.qrm-trigger[aria-expanded="true"]{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+      '.qrm-count{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 5px;border-radius:999px;background:var(--dsw-alias-interactive-bg-hover-accent);color:var(--dsw-alias-label-primary);font-size:10px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1}',
+      // Panel: the same elevation tokens the host panels use, plus a deliberate 1px
+      // border — the elevation tokens resolve to a 0.5px ring on their own, which is
+      // too faint to separate a popover from the conversation behind it.
+      '.qrm-panel{box-sizing:border-box;width:min(420px,calc(100vw - 32px));max-height:min(560px,calc(100vh - 96px));overflow:auto;position:fixed;z-index:120;display:flex;flex-direction:column;gap:10px;padding:16px 18px 14px;border-radius:var(--dsw-radius-lg);border:1px solid var(--dsw-alias-border-l3);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);box-shadow:var(--dsw-elevation-prominent),var(--dsw-shadow-lv2);font-size:13px;line-height:1.5}',
+      '.qrm-head{font-size:13px;font-weight:600;letter-spacing:-.01em}',
+      '.qrm-section{font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--dsw-alias-label-caption)}',
+      '.qrm-row{display:flex;align-items:center;gap:8px;justify-content:space-between;padding:7px 8px;margin:0 -8px;border-top:.5px solid var(--dsw-alias-border-l2);transition:background .12s ease}',
       // A teammate row navigates into that member's session, so it has to read as
       // actionable and stay keyboard-reachable; the Lead row says so with data-openable.
-      '.qrm-row[data-openable="yes"]{cursor:pointer;border-radius:6px;padding-left:6px;padding-right:6px;margin-left:-6px;margin-right:-6px}',
-      '.qrm-row[data-openable="yes"]:hover,.qrm-row[data-openable="yes"]:focus-visible{background:var(--dsw-alias-bg-layer-1);outline:none}',
-      '.qrm-row[data-openable="yes"]:focus-visible{box-shadow:inset 0 0 0 1px var(--dsw-alias-state-business-primary)}',
-      '.qrm-notice{font-size:11px;color:var(--dsw-alias-state-warn-primary);padding:4px 0}',
-      '.qrm-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.qrm-row[data-openable="yes"]{cursor:pointer;border-radius:var(--dsw-radius-sm)}',
+      '.qrm-row[data-openable="yes"]:hover{background:var(--dsw-alias-interactive-bg-hover)}',
+      '.qrm-row[data-openable="yes"]:focus-visible{background:var(--dsw-alias-interactive-bg-hover);outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:-2px}',
+      '.qrm-row[data-openable="yes"]:hover .qrm-go,.qrm-row[data-openable="yes"]:focus-visible .qrm-go{opacity:1;transform:translateX(1px)}',
+      // Lead row: present, but visibly not a link.
+      '.qrm-row[data-openable="no"]{cursor:default}',
+      '.qrm-id{display:flex;align-items:center;gap:8px;min-width:0}',
+      '.qrm-dot{flex:none;width:8px;height:8px;border-radius:999px;background:var(--dsw-alias-state-idle-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-state-idle-primary) 22%,transparent)}',
+      '.qrm-dot[data-phase="active"]{background:var(--dsw-alias-state-success-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-state-success-primary) 22%,transparent)}',
+      '.qrm-dot[data-phase="failed"]{background:var(--dsw-alias-state-error-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-state-error-primary) 22%,transparent)}',
+      '.qrm-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}',
       '.qrm-meta{display:flex;align-items:center;gap:8px;flex:none;font-size:12px;color:var(--dsw-alias-label-tertiary)}',
-      '.qrm-chip{border-radius:999px;padding:1px 8px;font-size:11px}',
-      '.qrm-chip[data-state="ok"]{background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 18%,transparent)}',
-      '.qrm-chip[data-state="warn"]{background:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 18%,transparent)}',
-      '.qrm-chip[data-state="bad"]{background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 18%,transparent)}',
-      '.qrm-task{display:flex;flex-direction:column;gap:2px;padding:6px 0;border-top:.5px solid var(--dsw-alias-border-l2)}',
+      '.qrm-phase{font-size:12px;color:var(--dsw-alias-label-tertiary)}',
+      '.qrm-chip{border-radius:999px;padding:1px 8px;font-size:11px;font-weight:500;line-height:18px;white-space:nowrap}',
+      '.qrm-chip[data-state="ok"]{background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 18%,transparent);color:var(--dsw-alias-state-business-primary)}',
+      '.qrm-chip[data-state="warn"]{background:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 18%,transparent);color:var(--dsw-alias-state-warn-primary)}',
+      '.qrm-chip[data-state="bad"]{background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 18%,transparent);color:var(--dsw-alias-state-error-primary)}',
+      // The row's own affordance, revealed on hover/focus.
+      '.qrm-go{flex:none;color:var(--dsw-alias-label-caption);font-size:14px;line-height:1;opacity:.45;transition:opacity .12s ease,transform .12s ease}',
+      '.qrm-none{font-size:12px;color:var(--dsw-alias-label-caption);padding:2px 0 4px}',
+      '.qrm-notice{font-size:11px;color:var(--dsw-alias-state-warn-primary);padding:5px 8px;margin:0 -2px;border-radius:var(--dsw-radius-xs);background:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 12%,transparent)}',
+      '.qrm-task{display:flex;flex-direction:column;gap:3px;padding:7px 0;border-top:.5px solid var(--dsw-alias-border-l2)}',
       '.qrm-taskTitle{display:flex;align-items:center;justify-content:space-between;gap:8px}',
       '.qrm-warn{font-size:11px;color:var(--dsw-alias-state-warn-primary)}',
-      '.qrm-note{font-size:11px;color:var(--dsw-alias-label-tertiary);margin-top:4px}'
+      '.qrm-failure{font-size:12px;color:var(--dsw-alias-state-error-primary);line-height:1.5}',
+      '.qrm-note{font-size:11px;color:var(--dsw-alias-label-caption);line-height:1.55;margin-top:2px;padding-top:10px;border-top:.5px solid var(--dsw-alias-border-l1)}'
     ].join('')
     document.head.append(style)
 
@@ -102,16 +124,18 @@ window.__ModuleLoader__.load({
       // visible. The projection carries no activity, so navigation is the answer;
       // this is the same call the official Agent Teams panel makes.
       //
-      // The address is read from the durable record rather than assumed: a member
-      // that has gone inactive is released, and `binding()` then returns undefined.
-      // Reporting the refusal is the point — a click that silently did nothing would
-      // be worse than no click at all.
+      // The address is constructed, not read from a binding. `binding(memberId)` is
+      // only defined for sessions this browser has already loaded, so every member
+      // spawned since the last page load read as unopenable and its row refused —
+      // measured live on 2026-10-04: an ACTIVE reviewer's row showed the refusal
+      // notice on every click, because spawning never loads the child session into
+      // the browser store. The official panel passes the durable direct-parent
+      // address instead and lets `retain()` load the child session on demand; this
+      // does the same, so a row works the first time it is clicked.
       const openMember = (sessionId, memberId) => {
-        const binding = sessions.binding(memberId)
-        if (binding === undefined) return { ok: false, reason: 'openUnavailable' }
-        const address = binding.session?.getSnapshot?.().subagent?.address
-        if (address === undefined) return { ok: false, reason: 'openUnavailable' }
-        ctx.uiWorkspace.openSession(address)
+        const parentSessionId = leadOf(sessionId)
+        if (memberId === parentSessionId) return { ok: false, reason: 'openUnavailable' }
+        ctx.uiWorkspace.openSession({ parentSessionId, childSessionId: memberId, mode: 'continuable' })
         return { ok: true }
       }
 
@@ -145,7 +169,10 @@ window.__ModuleLoader__.load({
           open ? h('div', {
             ref: panelRef, className: 'qrm-panel', role: 'dialog', 'aria-label': tr('trigger'),
             style: { right: 16, top: 64 }
-          }, h('div', { className: 'qrm-warn' }, tr('failure') + team.failure)) : null
+          },
+            h('div', { className: 'qrm-head' }, tr('failure')),
+            h('div', { className: 'qrm-failure' }, team.failure)
+          ) : null
         )
       }
 
@@ -214,12 +241,20 @@ window.__ModuleLoader__.load({
           'data-openable': canOpen ? 'yes' : 'no',
           ...interactive
         },
-          h('span', { className: 'qrm-name' }, member.name),
+          h('span', { className: 'qrm-id' },
+            member.role === 'lead'
+              ? null
+              : h('span', { className: 'qrm-dot', 'data-phase': member.phase, 'aria-hidden': 'true' }),
+            h('span', { className: 'qrm-name' }, member.name)
+          ),
           h('span', { className: 'qrm-meta' },
-            member.role === 'lead' ? null : h('span', null, tr('phase_' + member.phase)),
+            member.role === 'lead'
+              ? null
+              : h('span', { className: 'qrm-phase' }, tr('phase_' + member.phase)),
             member.phase === 'failed'
               ? h('span', { className: 'qrm-chip', 'data-state': 'bad' }, member.error ?? tr('phase_failed'))
-              : null
+              : null,
+            canOpen ? h('span', { className: 'qrm-go', 'aria-hidden': 'true' }, '›') : null
           )
         )
       }
@@ -237,7 +272,9 @@ window.__ModuleLoader__.load({
           h('div', { className: 'qrm-head' }, sessionId === leadId ? tr('lead') : tr('member')),
 
           h('div', { className: 'qrm-section' }, tr('roster')),
-          members.map(memberRow),
+          teammates.length === 0 && members.length === 0
+            ? h('div', { className: 'qrm-none' }, tr('none'))
+            : members.map(memberRow),
           notice === null ? null : h('div', { className: 'qrm-notice', role: 'status' }, notice),
 
           tasks.length === 0 ? null : h('div', null,

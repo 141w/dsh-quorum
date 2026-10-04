@@ -16,7 +16,8 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -225,29 +226,50 @@ test('a teammate row is openable and the Lead row is not', () => {
 
 // ── navigation ────────────────────────────────────────────────────────────────
 
-test('clicking a teammate opens its own session with the address the runtime recorded', () => {
-  const address = { parentSessionId: 'lead-1', childSessionId: 'child-1', mode: 'continuable' }
-  const h = makeHarness({
-    team: TEAM,
-    binding: (id) => (id === 'child-1' ? { session: { getSnapshot: () => ({ subagent: { address } }) } } : undefined),
-    sessions: {},
-  })
+test('clicking a teammate opens its own session through the durable parent address', () => {
+  // No binding at all: this is the live case. A member spawned after the last page
+  // load has never been loaded into the browser store, and the first version of
+  // this panel read its address from `binding(memberId)` — so an ACTIVE member's
+  // row refused every click. The address is now constructed and `retain()` loads
+  // the child session on demand, which is what the official panel does.
+  const h = makeHarness({ team: TEAM, binding: () => undefined, sessions: {} })
   h.exported.apply(h.ctx)
   h.setSessionStore({ projectionsBySession: { 'lead-1': { values: { agentTeam: TEAM } } } })
   const tree = h.open()
 
   const reviewerRow = find(tree, (node) => node.props?.['data-openable'] === 'yes')
   reviewerRow.props.onClick()
-  assert.deepEqual(h.ctx.uiWorkspace.calls, [address], 'the panel opens the member session, not the Lead session')
+  assert.deepEqual(h.ctx.uiWorkspace.calls, [{
+    parentSessionId: 'lead-1',
+    childSessionId: 'child-1',
+    mode: 'continuable',
+  }], 'the panel opens the member session, not the Lead session')
+})
+
+test('from a member session, the parent Lead is resolved through its binding', () => {
+  // Opened inside a teammate's own conversation, `leadOf` must read the parent from
+  // that session's subagent address, not assume the current session is the Lead.
+  const h = makeHarness({
+    team: TEAM,
+    binding: (id) => (id === 'child-1'
+      ? { session: { getSnapshot: () => ({ subagent: { address: { parentSessionId: 'lead-9', childSessionId: 'child-1', mode: 'continuable' } } }) } }
+      : undefined),
+    sessions: {},
+  })
+  h.exported.apply(h.ctx)
+  h.setSessionStore({ projectionsBySession: { 'lead-9': { values: { agentTeam: TEAM } } } })
+  const tree = h.open({ sessionId: 'child-1' })
+
+  find(tree, (node) => node.props?.['data-openable'] === 'yes').props.onClick()
+  assert.deepEqual(h.ctx.uiWorkspace.calls, [{
+    parentSessionId: 'lead-9',
+    childSessionId: 'child-1',
+    mode: 'continuable',
+  }])
 })
 
 test('the keyboard path works and ignores other keys', () => {
-  const address = { parentSessionId: 'lead-1', childSessionId: 'child-1', mode: 'continuable' }
-  const h = makeHarness({
-    team: TEAM,
-    binding: () => ({ session: { getSnapshot: () => ({ subagent: { address } }) } }),
-    sessions: {},
-  })
+  const h = makeHarness({ team: TEAM, binding: () => undefined, sessions: {} })
   h.exported.apply(h.ctx)
   h.setSessionStore({ projectionsBySession: { 'lead-1': { values: { agentTeam: TEAM } } } })
   const tree = h.open()
@@ -261,23 +283,82 @@ test('the keyboard path works and ignores other keys', () => {
   row.props.onKeyDown(key('Enter'))
   assert.equal(h.ctx.uiWorkspace.calls.length, 1)
   assert.equal(prevented, 1, 'Enter must not also activate something else')
+  row.props.onKeyDown(key(' '))
+  assert.equal(h.ctx.uiWorkspace.calls.length, 2, 'Space activates the row too')
 })
 
-test('an unloaded member session refuses loudly instead of doing nothing', () => {
-  // An inactive member is released, so `binding()` returns undefined. A click that
-  // silently did nothing would be worse than no click at all.
+test('a row navigates even when its session was never loaded in this browser', () => {
+  // Regression: the address used to come from `binding(memberId)`, which is
+  // undefined for every member spawned since the last page load — including a
+  // member that is still running. The click then produced a refusal notice and no
+  // navigation. Constructing the durable parent address is what makes the first
+  // click work.
   const h = makeHarness({ team: TEAM, binding: () => undefined, sessions: {} })
   h.exported.apply(h.ctx)
   h.setSessionStore({ projectionsBySession: { 'lead-1': { values: { agentTeam: TEAM } } } })
   const tree = h.open()
   find(tree, (node) => node.props?.['data-openable'] === 'yes').props.onClick()
 
-  assert.equal(h.ctx.uiWorkspace.calls.length, 0, 'nothing may be opened without a durable address')
+  assert.equal(h.ctx.uiWorkspace.calls.length, 1, 'a never-loaded member session is still openable')
   const afterClick = h.render({})
-  const noticeAfter = find(afterClick, (node) => node.props?.className === 'qrm-notice')
-  assert.ok(noticeAfter !== undefined, 'the refusal must be surfaced, not swallowed')
-  assert.equal(noticeAfter.props.role, 'status', 'the notice is announced to assistive tech')
-  assert.equal(noticeAfter.children[0], 'openUnavailable')
+  assert.equal(find(afterClick, (node) => node.props?.className === 'qrm-notice'), undefined,
+    'a successful navigation must not also raise the refusal notice')
+})
+
+// ── the visual affordances ────────────────────────────────────────────────────
+// These pin the cues that make the panel readable rather than decorative: a status
+// dot per teammate, a hidden-from-AT chevron on the rows that navigate, and an
+// explicit empty state. None of them can be judged by looking at a tree, but each
+// one existing at all is a contract the next edit should have to break on purpose.
+
+test('a teammate row carries a phase dot and the Lead row does not', () => {
+  const h = makeHarness({ team: TEAM, binding: () => undefined, sessions: {} })
+  h.exported.apply(h.ctx)
+  h.setSessionStore({ projectionsBySession: { 'lead-1': { values: { agentTeam: TEAM } } } })
+  const tree = h.open()
+
+  const rows = []
+  const collect = (node) => {
+    if (!node || typeof node !== 'object') return
+    if (Array.isArray(node)) return node.forEach(collect)
+    if (node.props?.className === 'qrm-row') rows.push(node)
+    ;(node.children ?? []).forEach(collect)
+  }
+  collect(tree)
+
+  const dotIn = (row) => find(row, (node) => node.props?.className === 'qrm-dot')
+  const [lead, reviewer] = rows
+  assert.equal(dotIn(lead), undefined, 'the Lead is the session you are already in; it gets no status')
+  const dot = dotIn(reviewer)
+  assert.ok(dot !== undefined, 'a teammate shows its phase as a dot')
+  assert.equal(dot.props['data-phase'], 'active', 'the dot is phase-addressed for styling')
+  assert.equal(dot.props['aria-hidden'], 'true', 'the phase is already spoken by the text beside it')
+})
+
+test('the clickable row shows a chevron, and it is not announced', () => {
+  const h = makeHarness({ team: TEAM, binding: () => undefined, sessions: {} })
+  h.exported.apply(h.ctx)
+  h.setSessionStore({ projectionsBySession: { 'lead-1': { values: { agentTeam: TEAM } } } })
+  const tree = h.open()
+
+  const chevron = find(tree, (node) => node.props?.className === 'qrm-go')
+  assert.ok(chevron !== undefined, 'the navigating row advertises that it navigates')
+  assert.equal(chevron.props['aria-hidden'], 'true', 'the row already carries an aria-label')
+})
+
+test('an empty roster says so instead of rendering an empty section', () => {
+  const empty = { members: [], tasks: [] }
+  const h = makeHarness({ team: empty, binding: () => undefined, sessions: {} })
+  h.exported.apply(h.ctx)
+  h.setSessionStore({ projectionsBySession: { 'lead-1': { values: { agentTeam: empty } } } })
+  const tree = h.open()
+
+  assert.equal(find(tree, (node) => node.props?.className === 'qrm-row'), undefined)
+  const none = find(tree, (node) => node.props?.className === 'qrm-none')
+  assert.ok(none !== undefined, 'a rostered-but-empty team states that plainly')
+  // The harness's `tr` is an identity stub, so this asserts the dictionary KEY was
+  // passed through — the copy itself is pinned by the dictionaries.
+  assert.equal(none.children[0], 'none')
 })
 
 // ── tokens ────────────────────────────────────────────────────────────────────
@@ -287,21 +368,32 @@ test('every theme token it styles with is one the running Theme defines', () => 
   // `--dsw-alias-state-danger-primary`; neither exists anywhere in the runtime, so the
   // chips' `color-mix()` background resolved to transparent. This cannot check how it
   // looks, but it can refuse a token that is not real.
-  const themes = [
-    'alias-bg-base', 'alias-bg-layer-1', 'alias-bg-layer-2', 'alias-bg-overlay',
-    'alias-border-l1', 'alias-border-l2', 'alias-brand-primary',
-    'alias-label-primary', 'alias-label-secondary',
-    'alias-state-error-primary', 'alias-state-idle-primary',
-    'alias-state-success-primary', 'alias-state-warn-primary', 'specific-sidebar-fill',
-    // Referenced by the host's own panels (and required for a plugin to match them),
-    // so present in the shipped stylesheets even though the live list omits them.
-    'alias-border-l3', 'alias-label-caption', 'alias-label-tertiary',
-    'alias-state-business-primary', 'elevation-prominent', 'elevation-panel',
-    'elevation-stroke', 'elevation-stroke-color',
-  ]
-  const used = [...new Set(SOURCE.match(/--dsw-[a-z0-9-]+/g) ?? [])].map((token) => token.replace('--dsw-', ''))
+  //
+  // The expected set is READ FROM THE THEME, not hand-listed. A hand-list drifted once
+  // already: this test used to wave through eight tokens as "used by the host's own
+  // panels", which was an assumption rather than a check — and it named tokens the
+  // theme does not define while missing ones it does. The Theme Inspect provider only
+  // advertises a curated subset (15), so the definition file is the authority.
+  const themeFile = join(
+    homedir(), '.hermes/node/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai',
+    'dsh-client-ui-theme/lib/client.js'
+  )
+  if (!existsSync(themeFile)) {
+    // Do not silently pass: a missing authority means this check cannot run.
+    assert.fail(`the Theme definition file is not installed, so tokens cannot be verified: ${themeFile}`)
+  }
+  const defined = new Set(
+    (readFileSync(themeFile, 'utf8').match(/--dsw-[a-z0-9-]+(?=:)/g) ?? []).map((t) => t.replace('--dsw-', ''))
+  )
+  assert.ok(defined.size > 100, 'the Theme definition file parsed into its token set')
+
+  const used = [...new Set(SOURCE.match(/--dsw-[a-z0-9-]+/g) ?? [])]
+    .map((token) => token.replace('--dsw-', ''))
+    // `--dsw-elevation-prominent,var(--dsw-shadow-lv2)` style lists can leave the regex
+    // matching a bare prefix; only a full name followed by `:` is a real definition.
+    .filter((token) => !token.endsWith('-'))
   assert.ok(used.length > 0, 'the panel styles itself with theme tokens')
-  const unknown = used.filter((token) => !themes.includes(token))
+  const unknown = used.filter((token) => !defined.has(token))
   assert.deepEqual(unknown, [], `unknown theme token(s): ${unknown.join(', ')}`)
 })
 

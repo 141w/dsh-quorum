@@ -16,8 +16,37 @@ in `package.json` `peerDependencies` and enforced at install time.
   supply an activity view — its member schema is strict and carries only
   `{id, name, role, phase, error?}`, and a plain-JS plugin cannot register a new
   projection key (`docs/D7-upstream-gaps.md`) — so navigation is the honest answer.
-  The row is a keyboard-reachable `role="button"`; a member session that has been
-  released reports that it cannot be opened rather than swallowing the click.
+  The row is a keyboard-reachable `role="button"` and opens the member's session
+  through the durable direct-parent address, the same call the official panel makes.
+
+### Fixed
+
+- **That row was dead on arrival in a browser: every click hit "该成员的会话当前未加载".**
+  The address was read from `sessions.binding(memberId)`, which is only defined for
+  sessions this browser has already loaded — and spawning a teammate never loads the
+  child session into the browser store, so the feature only ever worked in the structure
+  harness, where the binding is a stub. The address is now constructed
+  (`{parentSessionId, childSessionId, mode: "continuable"}`) and `retain()` loads the
+  child session on demand — the official Agent Teams panel's own pattern. Two regression
+  tests in `test/client-half.test.js` pin the constructed address and the
+  never-loaded-session case. A human click-through in the browser is still outstanding:
+  the only live evidence so far is the row rendering (2026-10-04 screenshot), which does
+  not exercise the click.
+
+### Changed
+
+- **The panel was rebuilt for readability.** It was structurally correct but visually a
+  flat grey list. Now: a framed popover (1px `border-l3` plus the host's elevation
+  tokens) rather than an unframed block, a bolder title, uppercase micro-labels, a filled
+  count badge on the trigger, a per-teammate phase dot (green active / grey provisioning
+  / red failed), a chevron on the rows that navigate, a callout-styled refusal notice, and
+  an explicit "no members yet" state instead of an empty section.
+
+- **The theme-token check now reads the theme instead of trusting a hand-kept list.** The
+  old list had drifted into approving eight tokens as "used by the host's own panels"
+  while missing ones the theme does define; the Theme Inspect provider only advertises a
+  curated subset (15), so `test/client-half.test.js` now parses the token set out of
+  `dsh-client-ui-theme/lib/client.js` and fails loudly if that file is absent.
 
 ### Verified
 
