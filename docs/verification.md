@@ -63,8 +63,13 @@ agent/created role=reviewer
 尚未做超限实验。已验证的前置条件：
 
 - `assistant/message` 事件带 `usage {inputTokens, outputTokens, totalTokens, cacheReadTokens}` 与 `turn`/`step`，可按会话聚合。
-- 官方 UI 的「用量」经实测等于 `Σ totalTokens ÷ 2`；而 `totalTokens = input + output + cacheRead` 且 `cacheRead ⊂ input`，**即上游把缓存段重复计入一次**。
-- 本插件的计费口径固定为 `input + output`（见 `architecture.md`）。
+
+> **以下两条已在 2026-10-04 被 `docs/M1-usage-accounting.md` 否证，保留原文以示修订来源。**
+>
+> - ~~官方 UI 的「用量」经实测等于 `Σ totalTokens ÷ 2`；而 `totalTokens = input + output + cacheRead` 且 `cacheRead ⊂ input`，**即上游把缓存段重复计入一次**。~~
+> - ~~本插件的计费口径固定为 `input + output`（见 `architecture.md`）。~~
+>
+> 449 条真实样本上，`input + cacheRead + cacheWrite + output` 与 `totalTokens` **精确相等**，说明各字段是互斥的（`dsh-llm/lib/types/types.d.ts:153-158` 的原文即如此声明），早先的"重复计入"判断来自对旧语义的推断。当时的 `input + output` 口径偏低 96.9%。现行口径见 `architecture.md`「计费口径」。
 
 ### 成本基线（用于设定预算默认值）
 
@@ -72,9 +77,12 @@ agent/created role=reviewer
 |---|---|
 | Lead 单派一个只读审查者 | 76.7K（UI 口径）/ 6 步 / 1 分 7 秒 |
 | Lead + 2 成员 + 任务板并发 | 361K（UI 口径）/ 3 分 4 秒 |
-| 三路径验收轮（本插件首次） | **91,272 billed** = lead 53,550 + 成员 25,422 + 成员 12,300 |
+| 三路径验收轮（本插件首次） | **91,272 billed**（旧口径）= lead 53,550 + 成员 25,422 + 成员 12,300 |
+| 2026-10-03 真实一轮（1 Lead + 2 成员，69 次调用） | **1,359,602 billed**（新口径）= lead 759,983 + 成员 341,749 + 257,870 |
 
-**fan-out 成本非线性**：两个成员并发的那轮是单派的近 5 倍。
+复现：`node .probe/cost-tier-check.mjs --lead session-a86ccf90-ccdc-4365-b431-fc1419933cfe`。该脚本按 Lead 自己的 `team/member` 行确定成员，只统计严格成员会话——同一工作区里并发跑过、但从未被编入该团队的会话不计入。
+
+**fan-out 成本非线性**：两个成员并发的那轮是单派的近 5 倍。上表前两行的「UI 口径」与后两行的 billed 不是同一个尺子，不可直接比较；换算关系已随 M1 一并废弃。
 
 ---
 

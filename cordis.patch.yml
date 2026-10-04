@@ -23,9 +23,21 @@
           shape: scout
           allow: [read, read_image, grep, glob, list]
         budget:
-          # Billed口径: input + output, excluding the cacheRead term the harness
-          # double-counts inside totalTokens. See docs/architecture.md.
-          maxBilledTokens: 400000
+          # Billed口径: input + output + cacheRead + cacheWrite — the disjoint sum
+          # the runtime defines (dsh-llm token-usage contract; measured on 449 real
+          # calls in docs/M1-usage-accounting.md, where it equals totalTokens on
+          # every sample). The earlier `input + output` reading is low by 96.9%.
+          #
+          # Recalibrated against measurement, not taste: the 2026-10-03 real team
+          # round (1 Lead + 2 members, 69 assistant messages) billed 1,359,602
+          # tokens under this formula — Lead 759,983, members 341,749 + 257,870.
+          # That is 68% of this budget, so one solid round fits and a second, or a
+          # larger team, crosses the soft tier. Lower it deliberately, per
+          # workspace. (The former 400,000 default was set under the old
+          # `input + output` formula, whose figure for this same round was 448,173 —
+          # a number small enough that the tiers could never be reached in
+          # practice, which is part of why they went untested.)
+          maxBilledTokens: 2000000
           # Crossing the soft tier stops new members; crossing the hard tier also
           # stops writes, forcing the team toward a conclusion.
           softTier: 0.7

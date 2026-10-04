@@ -1,0 +1,91 @@
+name: ci
+
+# The gate that makes "the tests are green" a verifiable statement about a
+# published artifact rather than about someone's laptop. Three checks:
+#
+#   build  — node --check on both halves (there is no bundler to catch syntax)
+#   test   — the unit and behaviour suite
+#   smoke  — pack the package, compose a throwaway profile around the installed
+#            copy, and assert the bundle layer actually loads. This is the one
+#            failure no unit test can see: a package that installs cleanly and
+#            never activates, whose only trace is one stderr warning.
+#
+# `smoke:install` (the real `dsh plugin add <tarball>` route through pnpm) is
+# deliberately NOT in CI: it is the slower, network-and-pnpm-dependent variant of
+# the same assertion, and it is run by hand against a release candidate.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor is `engines.node`; the upper entry is what the current DSH
+        # runtime is known to run on. A failure on only one of them is a real
+        # finding about the declared floor, not noise.
+        node: ['22.19.0', '22.x']
+    env:
+      # The DSH runtime the plugin declares compatibility with. Pinned, because
+      # the point of the smoke check is what THIS package resolves against, and
+      # an unpinned runtime would let upstream move the goalposts silently.
+      DSH_VERSION: '0.2.0-rc.2'
+      # Keep npm's cache inside the workspace so the job does not depend on a
+      # writable $HOME cache and so failures leave something inspectable.
+      npm_config_cache: ${{ github.workspace }}/.npm-cache
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install pnpm
+        # Required by `dsh plugin add`, which shells out to pnpm.
+        run: npm install --global pnpm@9
+
+      - name: Show the runtime under test
+        run: |
+          node --version
+          npm --version
+          npx --yes --package=@deepseek-ai/dsh@${DSH_VERSION} -- dsh --version
+
+      - name: Syntax gate
+        run: npm run build
+
+      - name: Test suite
+        run: npm test
+
+      - name: Publish smoke test
+        # Runs inside the pinned runtime's PATH so the script's `dsh` calls hit
+        # the declared version, not whatever the runner image happens to ship.
+        run: npx --yes --package=@deepseek-ai/dsh@${DSH_VERSION} -- npm run smoke
+
+      - name: Manifest audit
+        # `npm pack --dry-run` also executes `prepack`, so a manifest that is
+        # publishable-but-unloadable fails here rather than after a tag exists.
+        # `npm publish --dry-run` is avoided on purpose: it consults registry auth
+        # and would make this gate depend on credentials it does not need.
+        run: npm pack --dry-run
+
+      - name: Upload smoke failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          # Keep npm's own logs, which is where a failed `dsh plugin add` or pack
+          # leaves the child-process output the step itself did not print.
+          name: smoke-logs-node-${{ matrix.node }}
+          path: .npm-cache/_logs/**
+          if-no-files-found: ignore
+          retention-days: 7

@@ -1,6 +1,6 @@
 {
   "name": "dsh-quorum",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Mechanism-enforced discipline layer for DeepSeek Harness agent teams: role cards, quorum termination, evidence-gated reports and cost budgets.",
   "type": "module",
   "main": "index.js",
@@ -15,14 +15,22 @@
     "client.js",
     "cordis.patch.yml",
     "README.md",
+    "CHANGELOG.md",
     "docs"
   ],
   "scripts": {
     "build": "node --check index.js && node --check client.js",
-    "test": "node --test test/*.test.js"
+    "prepack": "npm run build",
+    "test": "node --test test/*.test.js",
+    "smoke": "node test/publish-smoke.mjs",
+    "smoke:install": "node test/publish-smoke.mjs --install"
   },
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=22.19.0",
+    "dsh": ">=0.2.0-rc.2 <0.3.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.2.0-rc.2 <0.3.0"
   },
   "license": "MIT",
   "dsh": {

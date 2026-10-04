@@ -1,0 +1,102 @@
+name: release
+
+# Publishes the package to npm when a GitHub Release is published, and nothing
+# else. Tagging alone does not publish: a release is a deliberate act, and this
+# workflow is deliberately not the trigger for a pre-release rehearsal.
+#
+# ── Why trusted publishing (OIDC) and not a token ─────────────────────────────
+#
+# npm's trusted publishing lets this workflow authenticate with a short-lived
+# OIDC token minted by GitHub, so there is no long-lived npm credential in the
+# repository or in Actions secrets. With `--provenance`, npm also publishes a
+# signed attestation linking the tarball to this commit and this workflow, which
+# is what lets an installer verify that the code they got is the code CI tested.
+#
+# ── One-time setup this workflow cannot do for you ────────────────────────────
+#
+# Trusted publishing requires the package to EXIST on the registry first: there
+# is nothing to attach a trusted publisher to until then. So the first version is
+# published from a maintainer machine:
+#
+#   1. npm login                       # 2FA required
+#   2. npm publish --access public     # publishes 0.2.0
+#   3. On npmjs.com → the package → Settings → Trusted Publisher → GitHub Actions:
+#        Organization or user: 141w
+#        Repository:           dsh-quorum
+#        Workflow filename:    release.yml
+#        Environment:          (blank, unless you add one below)
+#
+#   After step 3 every later release goes through this workflow. To rehearse the
+#   whole path without publishing, run the workflow manually with
+#   `dry_run: true`.
+#
+# ── Keeping the attestation honest ────────────────────────────────────────────
+#
+# `repository.url` in package.json must keep matching this repository. If it
+# drifts, provenance cannot be verified against the source and the attestation is
+# worse than useless.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Rehearse the full path without publishing'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  # Required to mint the OIDC token npm's trusted publishing exchanges.
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      DSH_VERSION: '0.2.0-rc.2'
+      npm_config_cache: ${{ github.workspace }}/.npm-cache
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.x'
+          # Points npm at the public registry explicitly; a stale .npmrc cannot
+          # silently redirect a publish.
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install pnpm
+        run: npm install --global pnpm@9
+
+      - name: Refuse to publish an unverified tree
+        # The release must be the artifact CI gated. Re-running the full suite
+        # here is cheap next to publishing something that skipped it.
+        run: |
+          npm run build
+          npm test
+          npx --yes --package=@deepseek-ai/dsh@${DSH_VERSION} -- npm run smoke
+
+      - name: Guard the tag
+        if: github.event_name == 'release'
+        # A release whose tag disagrees with package.json version publishes the
+        # wrong number, and npm makes that permanent within minutes.
+        run: |
+          set -eu
+          tag='${{ github.event.release.tag_name }}'
+          pkg="v$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "release tag $tag does not match package.json version $pkg" >&2
+            exit 1
+          fi
+
+      - name: Publish (rehearsal)
+        if: github.event_name == 'workflow_dispatch'
+        run: npm publish --dry-run --access public
+
+      - name: Publish
+        if: github.event_name == 'release'
+        # No NODE_AUTH_TOKEN: npm exchanges the OIDC token for a short-lived
+        # credential. `--provenance` attaches the signed build attestation.
+        run: npm publish --access public --provenance

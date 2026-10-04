@@ -1,12 +1,31 @@
+import { homedir } from 'node:os'
+import { isAbsolute, relative, resolve } from 'node:path'
+
 export const name = 'quorum'
 export const inject = ['tools', 'agentTeams', 'systemPrompt', 'sessionProjections', 'sessions']
 
-const WRITE_TOOLS = new Set(['write', 'edit', 'multiedit'])
+// Every tool that can put bytes on disk under a path the model chooses. The set
+// is load-bearing: a write-capable tool left out of it is a role performing an
+// action its card never granted, which is the exact thing this bundle claims is
+// impossible. Names verified against the installed runtime:
+//   write / edit            dsh-tool-fs
+//   str_replace_editor      dsh-tool-str-replace-editor (create/str_replace/insert; arg `path`)
+//   multiedit               not in this runtime; kept so a harness that ships it is still covered
+// `bash` and `pwsh` can also write, but they carry no file argument to check, so
+// they are governed by the role's `allow` list instead of by `writeScopes` — see
+// the note in docs/architecture.md.
+const WRITE_TOOLS = new Set(['write', 'edit', 'multiedit', 'str_replace_editor'])
 const SPAWN_TOOL = 'spawn_teammate'
+// The plugin's own primitives. A role card governs what an agent may do to the
+// workspace; it must not be able to revoke the mechanism that enforces the card,
+// or tightening the lead card would silently re-open the deadlock this bundle
+// exists to prevent (docs/verification.md:454 measured that risk).
+const PLUGIN_TOOLS = new Set(['quorum_wait'])
 // Reporting is a right, not a privilege. An allowlist that gates these turns
 // discipline into a silent deadlock: the member can never submit, the quorum can
 // never be met, and nothing ever fails loudly.
 const VOICE_TOOLS = new Set(['send_message', 'present'])
+
 // A result from one of these proves only that the member talked to the Team. It
 // can never stand as evidence that the member looked at anything.
 const PROTOCOL_TOOLS = new Set([
@@ -37,22 +56,81 @@ function targetPath(args) {
   return args.file_path ?? args.path ?? args.notebook_path
 }
 
-function withinScopes(cwd, filePath, scopes) {
-  if (!scopes?.length) return true
-  if (typeof filePath !== 'string') return false
-  const abs = filePath.startsWith('/') ? filePath : `${cwd ?? ''}/${filePath}`
-  const roots = scopes.filter((s) => !s.startsWith('~'))
-  const home = scopes.filter((s) => s.startsWith('~')).map((s) => process.env.HOME + s.slice(1))
-  return [...roots, ...home].some((scope) => abs.includes(scope.replace(/\/$/, '')))
+/**
+ * Does this call put bytes on disk? `str_replace_editor` doubles as a reader:
+ * `view` mutates nothing, so it must not be held to a write scope.
+ * @param name - tool name from the guard's execution.
+ * @param args - parsed tool arguments.
+ * @returns true when the call writes.
+ */
+function isMutation(name, args) {
+  if (name !== 'str_replace_editor') return true
+  return ['create', 'str_replace', 'insert'].includes(args?.command)
 }
 
-/** totalTokens double-counts cacheRead; bill on the non-overlapping terms. */
+/**
+ * The path a write is aimed at, whatever the tool calls it.
+ * @param name - tool name from the guard's execution.
+ * @param args - parsed tool arguments.
+ * @returns the target path, or undefined when the call carries none this file understands.
+ */
+function writeTarget(name, args) {
+  return name === 'str_replace_editor' ? args?.path : targetPath(args ?? {})
+}
+
+/**
+ * Is `filePath` inside one of `scopes`?
+ *
+ * This is a resolved-path containment test, not a substring test. Both of the
+ * older reading's holes are load-bearing behaviour, not pedantry: a substring
+ * match accepts `other-src/x` for the scope `src/`, and accepts `src/../secrets`
+ * because the traversal is only visible after resolution. It also anchors a
+ * relative path to the session cwd instead of concatenating it.
+ *
+ * `writeScopes: []` means *unrestricted*, and an unparseable path fails closed.
+ * @param cwd - the session working directory, the base for relative paths.
+ * @param filePath - the path the tool was asked to touch.
+ * @param scopes - granted scopes; `~` entries expand against HOME.
+ * @returns true when the write is inside a granted scope.
+ */
+function withinScopes(cwd, filePath, scopes) {
+  if (!scopes?.length) return true
+  if (typeof filePath !== 'string' || filePath === '') return false
+  const abs = resolve(cwd ?? process.cwd(), filePath.startsWith('~') ? homedir() + filePath.slice(1) : filePath)
+  return scopes.some((scope) => {
+    if (typeof scope !== 'string' || scope === '') return false
+    // A relative scope is workspace-relative (`src/` means the workspace's own
+    // `src/`), which is how every shipped card writes it; anchoring it to the
+    // process cwd instead would silently grant nothing.
+    const expanded = scope.startsWith('~') ? homedir() + scope.slice(1) : scope
+    const root = resolve(cwd ?? process.cwd(), expanded)
+    const rel = relative(root, abs)
+    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  })
+}
+
+/**
+ * Total tokens one assistant message is billed for.
+ *
+ * `dsh-llm/lib/types/types.d.ts:153-158` states the contract: *"Counts are
+ * DISJOINT: `inputTokens` is uncached input only; cached input is reported
+ * separately as `cacheReadTokens`/`cacheWriteTokens` (billed input = sum of the
+ * three)."* The earlier reading here — that cache reads were a double-counted
+ * subset of `inputTokens` — is contradicted by measurement on 449 real calls
+ * (docs/M1-usage-accounting.md): the disjoint sum equals `totalTokens` on every
+ * sample, while `input + output` is low by 96.9%, and by 32.6x in aggregate.
+ * A budget built on the old figure could not fire; a budget built on it and
+ * re-calibrated would fire immediately.
+ */
 function billedTokens(usage) {
   if (!usage || typeof usage !== 'object') return 0
   const input = Number(usage.inputTokens ?? usage.prompt_tokens ?? 0)
   const output = Number(usage.outputTokens ?? usage.completion_tokens ?? 0)
-  return input + output
+  const cacheRead = Number(usage.cacheReadTokens ?? 0)
+  const cacheWrite = Number(usage.cacheWriteTokens ?? 0)
+  return input + output + cacheRead + cacheWrite
 }
+
 
 function findUsage(node, depth = 0) {
   if (depth > 5 || node === null || typeof node !== 'object') return 0
@@ -232,6 +310,106 @@ function nap(ms, signal) {
 
 const intOr = (value, fallback) => (Number.isSafeInteger(Number(value)) ? Number(value) : fallback)
 
+const SHAPES = new Set(['scout', 'ship'])
+// A shell can write any path, so `writeScopes` cannot bound it: the guard sees a
+// command string, not a target. For a `ship` card that is a documented limit of
+// the mechanism (docs/architecture.md). For a `scout` card it is a contradiction
+// — the card's whole claim is that the role cannot modify the checkout — so it is
+// refused rather than warned about.
+const SHELL_TOOLS = new Set(['bash', 'pwsh'])
+
+/**
+ * Refuse a row that cannot enforce anything, at activation rather than at use.
+ *
+ * `agent/created` dispatches in `serial` mode (dsh-agent runtime-types:227), so a
+ * `TypeError` thrown inside that listener lands on the session-creation path —
+ * the failure D2 measured as "the session can no longer be created at all". The
+ * opposite failure is just as bad and just as quiet: `budget: {}` leaves every
+ * threshold comparison `false`, so the budget stops existing while the plugin
+ * reports itself healthy.
+ *
+ * An omitted `defaultRole` is *not* an error: it falls back to the scout card,
+ * which is the fail-closed direction.
+ * @param config - the row's config, as merged from the patch layers.
+ * @throws {Error} with a `quorum:` prefix naming the exact key at fault.
+ */
+function validateConfig(config) {
+  const bad = (detail) => {
+    throw new Error(`quorum: ${detail}`)
+  }
+  if (config === null || typeof config !== 'object') bad('config must be an object')
+
+  if (config.roles === null || typeof config.roles !== 'object' || Array.isArray(config.roles)) {
+    bad('config.roles must be an object mapping a teammate name to a role card')
+  }
+  for (const [key, card] of Object.entries(config.roles)) {
+    checkCard(key, `config.roles.${key}`, card, bad)
+  }
+  if (config.defaultRole !== undefined) {
+    checkCard('defaultRole', 'config.defaultRole', config.defaultRole, bad)
+  }
+
+  const budget = config.budget
+  if (budget === null || typeof budget !== 'object' || Array.isArray(budget)) {
+    bad('config.budget must be an object with maxBilledTokens and the two tier thresholds')
+  }
+  if (!(Number.isFinite(budget.maxBilledTokens) && budget.maxBilledTokens > 0)) {
+    bad(`config.budget.maxBilledTokens must be a positive number, got ${JSON.stringify(budget.maxBilledTokens)}`)
+  }
+  for (const tier of ['softTier', 'hardTier']) {
+    const value = budget[tier]
+    if (!(Number.isFinite(value) && value > 0 && value <= 1)) {
+      bad(`config.budget.${tier} must be a ratio in (0, 1], got ${JSON.stringify(value)}`)
+    }
+  }
+  if (budget.softTier > budget.hardTier) {
+    bad(`config.budget.softTier (${budget.softTier}) must not exceed hardTier (${budget.hardTier})`)
+  }
+
+  const quorum = config.quorum ?? {}
+  if (quorum.requires !== undefined && quorum.requires !== 'all') {
+    const wanted = Number(quorum.requires)
+    if (!(Number.isSafeInteger(wanted) && wanted > 0)) {
+      bad(`config.quorum.requires must be "all" or a positive integer, got ${JSON.stringify(quorum.requires)}`)
+    }
+  }
+  for (const key of ['timeoutMs', 'pollMs']) {
+    const value = quorum[key]
+    if (value !== undefined && !(Number.isSafeInteger(Number(value)) && Number(value) >= 0)) {
+      bad(`config.quorum.${key} must be a non-negative integer, got ${JSON.stringify(value)}`)
+    }
+  }
+}
+
+/** One role card: a shape the guard understands, and honestly-typed fields. */
+function checkCard(label, path, card, bad) {
+  if (card === null || typeof card !== 'object' || Array.isArray(card)) {
+    bad(`${path} must be an object (the role card for "${label}")`)
+  }
+  if (!SHAPES.has(card.shape)) {
+    bad(`${path}.shape must be one of ${[...SHAPES].join(' | ')}, got ${JSON.stringify(card.shape)}`)
+  }
+  for (const key of ['allow', 'writeScopes']) {
+    if (card[key] === undefined) continue
+    if (!Array.isArray(card[key]) || !card[key].every((entry) => typeof entry === 'string')) {
+      bad(`${path}.${key} must be an array of strings`)
+    }
+  }
+  if (card.shape === 'scout') {
+    const shell = (card.allow ?? []).filter((name) => SHELL_TOOLS.has(name))
+    if (shell.length > 0) {
+      bad(
+        `${path} is shape=scout (read-only) but grants ${shell.join(', ')}: `
+        + 'a shell can write any path, so this card would claim a guarantee it cannot keep',
+      )
+    }
+  }
+  if (card.maxMembers !== undefined && !(Number.isSafeInteger(card.maxMembers) && card.maxMembers > 0)) {
+    bad(`${path}.maxMembers must be a positive integer`)
+  }
+}
+
+
 // Registration bypasses `defineTool`, so both schemas are already canonical
 // JSON Schema: `required` is a name array, not the per-property flag the
 // first-party `tool-agent-team` package writes before compiling.
@@ -318,6 +496,8 @@ function renderVerdict(value) {
 }
 
 export function apply(ctx, config) {
+  validateConfig(config)
+
   const spend = new Map()
   const sessionTeam = new Map()
   // Teams whose Lead is already policed, so a fan-out registers the Lead once.
@@ -406,6 +586,8 @@ export function apply(ctx, config) {
 
     agent.ctx.tools.guard((exec) => {
       const ratio = budgetRatio()
+      const isWrite = WRITE_TOOLS.has(exec.name)
+      const args = parseArgs(exec.arguments)
 
       if (exec.name === SPAWN_TOOL && isLead) {
         if (ratio >= config.budget.softTier) {
@@ -417,21 +599,27 @@ export function apply(ctx, config) {
         }
       }
 
-      if (WRITE_TOOLS.has(exec.name) && ratio >= config.budget.hardTier) {
+      if (isWrite && ratio >= config.budget.hardTier) {
         return deny(`cost budget reached ${Math.round(ratio * 100)}%; this team is in report-only mode, summarise what you know and name what remains unverified`)
       }
 
-      if (card.allow?.length && !card.allow.includes(exec.name) && !WRITE_TOOLS.has(exec.name) && !VOICE_TOOLS.has(exec.name)) {
+      if (card.allow?.length && !card.allow.includes(exec.name) && !isWrite && !VOICE_TOOLS.has(exec.name) && !PLUGIN_TOOLS.has(exec.name)) {
         return deny(`role card "${roleKey}" is not granted the ${exec.name} tool`)
       }
 
-      if (WRITE_TOOLS.has(exec.name)) {
+      if (isWrite && isMutation(exec.name, args)) {
         if (card.shape === 'scout') {
           return deny(`role card "${roleKey}" has shape=scout, which is read-only by construction; report your finding as a message to the lead instead of editing files`)
         }
-        const path = targetPath(parseArgs(exec.arguments))
+        const path = writeTarget(exec.name, args)
+        // Fail closed on a write this file cannot locate. An unrecognized argument
+        // name upstream is exactly the case where a scope check would otherwise
+        // become a no-op while still looking installed.
+        if (typeof path !== 'string' || path === '') {
+          return deny(`role card "${roleKey}" may write only inside [${card.writeScopes?.join(', ') ?? ''}], but ${exec.name} carried no path this guard can read; denied rather than allowed unchecked`)
+        }
         if (!withinScopes(agent.session?.cwd ?? agent.session?.header?.cwd, path, card.writeScopes)) {
-          return deny(`path ${path} is outside the write scopes [${card.writeScopes.join(', ')}] granted to role card "${roleKey}"`)
+          return deny(`path ${path} is outside the write scopes [${card.writeScopes?.join(', ') ?? ''}] granted to role card "${roleKey}"`)
         }
       }
     })

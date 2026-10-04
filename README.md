@@ -10,7 +10,13 @@ A team of coding agents usually fails in one of four ways: anyone can touch anyt
 
 ## Install
 
-Requires `dsh` 0.2.0-rc.2 or compatible. Three bundles have to land in one profile, in this order: the web app, the experimental Agent Teams profile, then this one.
+Requires `dsh` in the range declared by `package.json` `peerDependencies` — currently `>=0.2.0-rc.2 <0.3.0`, verified against `0.2.0-rc.2`. That range is enforced at install time, because it is the only compatibility gate this runtime actually applies (`engines.dsh` is declared here for tooling but has no reader upstream). Installing on a `dsh` outside it is **refused** rather than silently allowed; to accept the risk anyway:
+
+```sh
+dsh plugin --profile <name> allow-version dsh-quorum@<version> --dsh-version <exact> --accept-risk
+```
+
+Three bundles have to land in one profile, in this order: the web app, the experimental Agent Teams profile, then this one.
 
 ```sh
 dsh plugin --profile <name> add -w @deepseek-ai/dsh-web-app@0.2.0-rc.2
@@ -66,18 +72,20 @@ A `github:` install runs no build step, so pnpm never asks you to authorise one:
 | **Capability** — a role cannot do what it was not granted | Monotonic per-agent guard at the tool boundary; denials surface as `tool/result` with `isError: true` | ✅ live, three-path: scout denied writes, ship denied out-of-scope writes, lead allowed |
 | **Termination** — a discussion is over when submissions arrive | `quorum_wait`, a Lead-only tool that blocks on the durable mailbox (`team/message/queued` minus `delivered`) | ✅ live, both paths: `NOT met` with actionable guidance, and `met — 1/1` |
 | **Evidence** — a report counts only if it is anchored to a real tool run | Reads the member's own session log via `ctx.sessions.get()` | ✅ live: a teammate reported from pure common sense with **zero tool calls** in its log, and the gate refused to count it — verdict `0/1 … backed by tool evidence` |
-| **Cost** — a budget, and graceful degradation when it is hit | Token accounting from `assistant/message` usage events; tiers stop new members, then stop writes | ⚠️ **behaviourally unit-tested across all three tiers, never triggered live** (a live trigger would need ~280K tokens of real work) |
+| **Cost** — a budget, and graceful degradation when it is hit | Token accounting from `assistant/message` usage events; tiers stop new members, then stop writes | ⚠️ **behaviourally unit-tested across all three tiers, never triggered live.** The billed figure is now the runtime's own disjoint sum (`input + output + cacheRead + cacheWrite`) — the 0.1.0 figure omitted the cache terms entirely and was low by 96.9%, which is part of why the tiers never fired. See [docs/M1-usage-accounting.md](docs/M1-usage-accounting.md) |
 
 The header also carries one visible surface: a **Quorum** button beside the official team entry, listing the role cards bound to this Team, each member's phase, and the shared task board with its write-scope warnings. It renders nothing on a session without a Team.
 
 Two design rules that are load-bearing and easy to break:
 
-- **Reporting is a right, not a privilege.** `send_message` and `present` are exempt from `allow` lists. When they were not, a scout could never submit, the quorum was permanently unreachable, **and nothing failed loudly** — 12 green tests did not catch it. Only a live run did.
+- **Reporting is a right, not a privilege.** `send_message` and `present` are exempt from `allow` lists. When they were not, a scout could never submit, the quorum was permanently unreachable, **and nothing failed loudly** — 12 green tests did not catch it. Only a live run did. The same rule now covers the plugin's own `quorum_wait`: a role card governs what a role may do *to the workspace*, and must not be able to revoke the mechanism that enforces the card.
 - **Ordinary sessions are exempt by code, not by luck.** A session is policed only once it actually has a teammate. Otherwise editing the `lead` card would silently tighten every unrelated conversation on the machine.
 
 ## Configuration
 
 Everything lives in the bundle's `cordis.patch.yml`, so a user can override it from their own profile patch without touching this package. Note that patch layers **replace the whole `config` of a row**, they do not deep-merge — override it by restating every key you need.
+
+A malformed row is refused at activation with a `quorum:`-prefixed message naming the key at fault. That is deliberate: `agent/created` dispatches in `serial` mode, so a `TypeError` inside the listener lands on the session-creation path, and the opposite failure (`budget: {}`, which makes every threshold comparison `false`) used to leave the budget silently nonexistent.
 
 ```yaml
 roles:
@@ -85,16 +93,17 @@ roles:
   reviewer:  { shape: scout, allow: [read, read_image, grep, glob, list] }
   fixer:     { shape: ship, writeScopes: ["src/", "tests/"] }
 defaultRole: { shape: scout, allow: [read, read_image, grep, glob, list] }
-budget:      { maxBilledTokens: 400000, softTier: 0.7, hardTier: 0.9 }
+budget:      { maxBilledTokens: 2000000, softTier: 0.7, hardTier: 0.9 }
 quorum:      { requires: all, timeoutMs: 300000, pollMs: 30000 }
 debug:       { logExemption: false }
 ```
 
 - A role is bound to a teammate's **durable Team name**, not to whatever the prompt says about it.
-- `writeScopes: []` means *unrestricted*, not *forbidden*.
+- `writeScopes: []` means *unrestricted*, not *forbidden*. A relative scope is workspace-relative.
 - Unlisted teammates get `defaultRole`, which is `scout`: a role nobody declared is not implicitly trusted to modify the checkout.
+- A `scout` card may not be granted `bash` or `pwsh` — a shell can write any path, so such a card would claim a guarantee the mechanism cannot keep. It is refused at activation.
 - `pollMs` must stay ≥ 10000 — upstream's change-wait rejects shorter timeouts.
-- **Billed tokens are `input + output`**, deliberately *not* the number the official UI shows. See the accounting note in [docs/architecture.md](docs/architecture.md).
+- **Billed tokens are `input + output + cacheRead + cacheWrite`** — the runtime's own disjoint sum, which equals its `totalTokens`. Measured on 449 real calls; the cache terms are 96.9% of the total, so a budget set without them is off by orders of magnitude, not by a rounding error. See [docs/M1-usage-accounting.md](docs/M1-usage-accounting.md).
 
 ## Known limitations
 
@@ -102,7 +111,7 @@ Read these before trusting it. They are all measured, not hypothetical.
 
 - **The header panel shows less than the plugin knows.** `client.js` registers one `conversation.session.header.actions` occupant: role cards bound to the durable roster, member phase, the task board and its `writeScopeWarnings`. It does **not** show quorum progress, evidence verdicts or budget tier, because the browser never receives them — the wire face of the `agentTeam` projection is `{members, tasks, failure}` and the mailbox stays server-side. Surfacing those needs a `dsh-api-*`-style remote service, which is the next piece of machinery, not a styling task.
 - **`quorum_wait` never wakes a silent member and never resends.** It waits on durable state only. If a member is inactive, the Lead must `send_message` it and call again — upstream's `wait_agent` explicitly refuses to wake inactive teammates, so this is not a gap we can close honestly.
-- **`writeScopes` is a substring match.** `src/../secrets` walks out of it. It deters model mistakes; it is **not** a security boundary. A real one needs resolved-path comparison.
+- **`writeScopes` is now a resolved-path boundary, not a substring match** — traversal, prefix collisions and relative paths are all handled. It is still **not a security boundary**: it cannot see through a symlink, and `bash`/`pwsh` on a `ship` card can write anywhere (a `scout` card may not have a shell at all). A real boundary needs `realpath` comparison and would have to give up the shell entirely.
 - **Overlapping `writeScopes` produce no warning.** Measured: `writeScopeWarnings` stayed `[]` throughout. What actually prevents lost work is a filesystem-level optimistic-concurrency guard (`FS_STALE_VERSION`), not the task board.
 - **Budget attribution starts at `agent/created`.** Usage a member produces before its session→team mapping exists is not counted.
 - **A denied action is only visible if the model attempts it.** A Lead that never asks a scout to write produces no denial record at all.
@@ -110,18 +119,46 @@ Read these before trusting it. They are all measured, not hypothetical.
 
 ## Development
 
-No build step — the plugin is plain ESM with **zero imports**, because a linked package that imports host packages without declaring `peerDependencies` fails to import *silently*.
+No build step — the plugin is plain ESM and imports **no host packages**, because a linked package that imports `@deepseek-ai/*` without declaring `peerDependencies` fails to import *silently*. It imports only `node:os` and `node:path`, whose names are stable across the Node versions this package declares in `engines.node`.
 
 ```sh
 npm run build                   # node --check index.js && node --check client.js
-npm test                        # 27 tests
+npm test                        # 39 tests
+npm run smoke                   # pack + compose a profile + assert the bundle layer loads (offline)
+npm run smoke:install           # the same, through a real `dsh plugin add <tarball>` (needs pnpm)
 ```
+
+CI runs the first three on Node 22.19 (the declared floor) and 22.x, against a pinned `dsh` runtime — including the smoke test, because there is one failure no unit test can see: a package that installs cleanly and never activates, whose only trace is a single stderr line. `npm run smoke` packs the package, builds a throwaway profile around the installed copy, and asserts that `--dump-config` actually composes the `# == dsh-quorum` layer and the `id: quorum` row.
 
 `client.js` is the browser half, declared through `dsh.client` in `package.json` and served as part of the combo bundle. It is plain `React.createElement` with no build step and no dependency beyond the `react` seed word, and it registers dictionaries via `ctx.locale` plus one slot occupant via `ctx.slots.inject`.
 
+### Releasing
+
+Publishing happens through `.github/workflows/release.yml` when a GitHub Release is published, using npm trusted publishing (OIDC) plus a signed provenance attestation — there is no npm token in the repository. **The first version has to be published by hand**, because trusted publishing needs the package to exist on the registry before a trusted publisher can be attached to it:
+
+```sh
+npm login                       # 2FA required
+npm publish --access public     # publishes the first version
+# then: npmjs.com → the package → Settings → Trusted Publisher → GitHub Actions
+#   Organization or user: 141w     Repository: dsh-quorum     Workflow: release.yml
+```
+
+After that, cut a release: bump `version`, move the CHANGELOG entry out of the top section, tag `v<version>`, publish the GitHub Release. The workflow re-runs the full gate and refuses a tag that disagrees with `package.json`. To rehearse without publishing, run the workflow manually with `dry_run: true`.
+
 Want to try it? **[docs/TESTING.md](docs/TESTING.md)** has six scenarios, each with the exact command to check the durable evidence rather than trusting the assistant's own report.
 
-`docs/verification.md` records raw commands and raw output for every claim above, including the failures. `docs/D2-finding.md`, `docs/D3a-verified.md` and `docs/D5-live-verified.md` document results that changed the design: plugins **cannot** contribute durable session event types (writing one makes the session permanently unopenable), the exemption had to be proven by positive evidence rather than by silence, and a tool armed mid-turn is invisible unless the model is told about it.
+### Where the evidence lives
+
+`docs/verification.md` records raw commands and raw output for every claim above, including the failures. Alongside it:
+
+| Document | What it settled |
+|---|---|
+| [docs/D2-finding.md](docs/D2-finding.md) | Plugins **cannot** contribute durable session event types — writing one makes the session permanently unopenable |
+| [docs/D3a-verified.md](docs/D3a-verified.md) | The ordinary-session exemption had to be a code path, not a config value |
+| [docs/D5-live-verified.md](docs/D5-live-verified.md) | A tool armed mid-turn is invisible unless the model is told about it |
+| [docs/M1-usage-accounting.md](docs/M1-usage-accounting.md) | Token accounting: the billed figure and the budget default, from 449 measured calls |
+| [docs/D6-cost-tier-live.md](docs/D6-cost-tier-live.md) | The operator brief for the one discipline with no live evidence yet |
+| [docs/D7-upstream-gaps.md](docs/D7-upstream-gaps.md) | The two upstream extension points this bundle needs and cannot build itself |
 
 ## License
 
