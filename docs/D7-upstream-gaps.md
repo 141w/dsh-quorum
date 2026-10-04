@@ -2,6 +2,7 @@
 
 日期：2026-10-04　状态：**已核实、未提交**
 上游仓库：`deepseek-ai/deepseek-harness`（`has_issues: false`、`has_discussions: true` → 走 Discussions）
+**可直接粘贴的正文见 [D7-upstream-discussions.md](D7-upstream-discussions.md)。**
 
 这两条都是本插件在**只读**范围内无法自行解决的架构封闭。它们不是 bug：上游的实现有明确理由，两条理由我都在代码注释里读到了。缺口在于**下游插件没有任何等价路径**。
 
