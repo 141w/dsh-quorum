@@ -1,5 +1,7 @@
 # dsh-quorum
 
+[![ci](https://github.com/141w/dsh-quorum/actions/workflows/ci.yml/badge.svg)](https://github.com/141w/dsh-quorum/actions/workflows/ci.yml)
+
 **Mechanism-enforced discipline for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Agent Teams.**
 
 A team of coding agents usually fails in one of four ways: anyone can touch anything, nobody knows when the discussion is over, the bill arrives after the fact, and a confident report is treated as a verified one. Projects like [firstmate](https://github.com/kunchenguid/firstmate) solve these — but only by *asking* the model nicely, because a terminal harness gives them nowhere else to hook.
