@@ -6,6 +6,40 @@ While `dsh` itself is `0.2.x` (alpha/rc), a `0.x` version here means: minor bump
 behaviour or the role-card semantics, patch bumps do not. The compatible `dsh` range is declared
 in `package.json` `peerDependencies` and enforced at install time.
 
+## Unreleased
+
+### Added
+
+- **A teammate row in the Quorum panel now opens that member's own session.** The panel
+  could name the roles but gave no way into the work, so "what is this agent actually
+  doing" had exactly one answer: the official Agent Teams panel. The projection cannot
+  supply an activity view — its member schema is strict and carries only
+  `{id, name, role, phase, error?}`, and a plain-JS plugin cannot register a new
+  projection key (`docs/D7-upstream-gaps.md`) — so navigation is the honest answer.
+  The row is a keyboard-reachable `role="button"`; a member session that has been
+  released reports that it cannot be opened rather than swallowing the click.
+
+### Fixed
+
+- **Two theme tokens in the panel did not exist.** `--dsw-alias-state-warning-primary`
+  and `--dsw-alias-state-danger-primary` appear in zero installed packages (the real
+  names are `state-warn-primary` and `state-error-primary`), so the `color-mix()`
+  backgrounds of the panel's status chips resolved to transparent. Verified against the
+  running `Theme` token list and by counting references across the runtime's packages.
+- **The publish smoke test broke on npm's own output.** `npm pack --json` runs
+  `prepack`, and npm prints that script's `npm notice` lines on stdout, which landed
+  after the closing brace and made the JSON unparseable. `--silent` now suppresses them,
+  and both result shapes npm has shipped for this command (an array, and an object keyed
+  by package name) are accepted instead of pinning a client version.
+
+### Added (tests)
+
+- `test/client-half.test.js`: 9 cases driving the browser half without a browser —
+  module contract, service declaration, slot registration as an effect, the empty-state
+  early return, openable vs. non-openable rows, the navigation target, the keyboard path,
+  the refusal path, hook order across a late-arriving projection, and a refusal of any
+  theme token the running Theme does not define.
+
 ## 0.2.0
 
 This release changes behaviour and role-card semantics, so it is a minor bump rather than a patch:

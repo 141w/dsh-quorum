@@ -112,6 +112,7 @@ debug:       { logExemption: false }
 Read these before trusting it. They are all measured, not hypothetical.
 
 - **The header panel shows less than the plugin knows.** `client.js` registers one `conversation.session.header.actions` occupant: role cards bound to the durable roster, member phase, the task board and its `writeScopeWarnings`. It does **not** show quorum progress, evidence verdicts or budget tier, because the browser never receives them — the wire face of the `agentTeam` projection is `{members, tasks, failure}` and the mailbox stays server-side. Surfacing those needs a `dsh-api-*`-style remote service, which is the next piece of machinery, not a styling task.
+- **The panel reports no member activity, so it navigates instead.** The projection's member schema is strict and carries exactly `{id, name, role, phase, error?}` — there is no current tool, output or progress on the wire, and a plain-JS plugin cannot register a new projection key (see [docs/D7-upstream-gaps.md](docs/D7-upstream-gaps.md)). Clicking a teammate row therefore opens **that member's own session**, which is where its work is actually visible. That is the same navigation the official Agent Teams panel performs, entered from the role card rather than the name. A member whose session has been released (it went inactive) cannot be opened; the panel says so instead of failing silently.
 - **`quorum_wait` never wakes a silent member and never resends.** It waits on durable state only. If a member is inactive, the Lead must `send_message` it and call again — upstream's `wait_agent` explicitly refuses to wake inactive teammates, so this is not a gap we can close honestly.
 - **`writeScopes` is now a resolved-path boundary, not a substring match** — traversal, prefix collisions and relative paths are all handled. It is still **not a security boundary**: it cannot see through a symlink, and `bash`/`pwsh` on a `ship` card can write anywhere (a `scout` card may not have a shell at all). A real boundary needs `realpath` comparison and would have to give up the shell entirely.
 - **Overlapping `writeScopes` produce no warning.** Measured: `writeScopeWarnings` stayed `[]` throughout. What actually prevents lost work is a filesystem-level optimistic-concurrency guard (`FS_STALE_VERSION`), not the task board.
@@ -125,7 +126,7 @@ No build step — the plugin is plain ESM and imports **no host packages**, beca
 
 ```sh
 npm run build                   # node --check index.js && node --check client.js
-npm test                        # 39 tests
+npm test                        # 48 tests
 npm run smoke                   # pack + compose a profile + assert the bundle layer loads (offline)
 npm run smoke:install           # the same, through a real `dsh plugin add <tarball>` (needs pnpm)
 ```
@@ -133,6 +134,8 @@ npm run smoke:install           # the same, through a real `dsh plugin add <tarb
 CI runs the first three on Node 22.19 (the declared floor) and 22.x, against a pinned `dsh` runtime — including the smoke test, because there is one failure no unit test can see: a package that installs cleanly and never activates, whose only trace is a single stderr line. `npm run smoke` packs the package, builds a throwaway profile around the installed copy, and asserts that `--dump-config` actually composes the `# == dsh-quorum` layer and the `id: quorum` row.
 
 `client.js` is the browser half, declared through `dsh.client` in `package.json` and served as part of the combo bundle. It is plain `React.createElement` with no build step and no dependency beyond the `react` seed word, and it registers dictionaries via `ctx.locale` plus one slot occupant via `ctx.slots.inject`.
+
+It is covered by `test/client-half.test.js`, which loads the file against a stubbed module loader and a stub React and drives the component's render path and its click/keyboard handlers. That harness exists because this half shipped for a day with two theme tokens that do not exist anywhere in the runtime — `--dsw-alias-state-warning-primary` and `--dsw-alias-state-danger-primary` — which made its status chips render with a transparent background. Nothing caught it, because nothing had ever executed this file. The harness cannot judge appearance; it can refuse an unknown token, a missing service, a broken registration, and a dead click path.
 
 ### Releasing
 

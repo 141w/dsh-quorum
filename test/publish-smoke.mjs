@@ -89,7 +89,10 @@ console.log()
 try {
   // ── 1. the tarball npm would publish ──────────────────────────────────────
   console.log('1. npm pack')
-  const pack = run('npm', ['pack', '--json', '--pack-destination', work], {
+  // `--silent` matters: `pack` runs `prepack`, and npm prints that script's own
+  // `npm notice` lines on stdout, which corrupts the JSON document. Measured with this
+  // npm on 2026-10-04 — the notices landed after the closing brace.
+  const pack = run('npm', ['pack', '--json', '--silent', '--pack-destination', work], {
     cwd: ROOT,
     env: { ...process.env, npm_config_cache: join(work, 'npm-cache') },
   })
@@ -97,12 +100,19 @@ try {
     fail(`npm pack exited ${pack.code}: ${pack.stderr.trim().split('\n').slice(-3).join(' | ')}`)
     throw new Error('pack failed')
   }
-  const packed = JSON.parse(pack.stdout.slice(pack.stdout.indexOf('[')))
-  const tarballName = packed[0].filename
+  // npm has emitted both an array of results and an object keyed by package name for
+  // the same command; accept either rather than pinning a client version.
+  const report = JSON.parse(pack.stdout)
+  const result = Array.isArray(report) ? report[0] : Object.values(report)[0]
+  if (result === undefined || typeof result.filename !== 'string') {
+    fail(`npm pack --json returned an unrecognized shape: ${pack.stdout.slice(0, 200)}`)
+    throw new Error('pack shape')
+  }
+  const tarballName = result.filename
   const tarball = join(work, tarballName)
-  ok(`packed ${tarballName} (${packed[0].entryCount} files, ${packed[0].size} bytes)`)
+  ok(`packed ${tarballName} (${result.entryCount} files, ${result.size} bytes)`)
 
-  const packedPaths = new Set(packed[0].files.map((file) => file.path))
+  const packedPaths = new Set(result.files.map((file) => file.path))
   for (const required of REQUIRED_IN_TARBALL) {
     if (packedPaths.has(required)) ok(`tarball carries ${required}`)
     else fail(`tarball is missing ${required} — an installed copy cannot load`)
