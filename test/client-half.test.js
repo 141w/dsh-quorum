@@ -431,10 +431,20 @@ test('the phase guard covers every phase the wire can carry', () => {
 
 test('the panel is kept inside the viewport, not just near the trigger', () => {
   // The popover is positioned at click time from the trigger's measured box, and the
-  // clamp used to be a bare `window.innerWidth - 436` — the panel's declared 420px plus
-  // its 16px margin, written as one number that nothing derived from the stylesheet. It
-  // is now `PANEL_WIDTH`/`PANEL_MARGIN`. This pins the arithmetic: a trigger near the
+  // clamp used to be a bare `window.innerWidth - 436` — the panel's declared width plus
+  // its margin, written as one number that nothing derived from the stylesheet. It is
+  // now `PANEL_WIDTH`/`PANEL_MARGIN`. This pins the arithmetic: a trigger near the
   // right edge must not push the panel off screen.
+  //
+  // The declared width and the stylesheet literal are two numbers that have to move
+  // together, so this test reads them both out of the source instead of repeating them:
+  // the same drift that made the old `436` unverifiable would have made a hardcoded
+  // `340` here silently stale the first time the panel was narrowed.
+  const panelRule = SOURCE.match(/width:min\((\d+)px,\s*calc\(100vw - 32px\)\)/)
+  assert.ok(panelRule, 'the panel declares its width in the stylesheet')
+  const declared = Number(panelRule[1])
+  assert.ok(/const PANEL_WIDTH = \d+/.test(SOURCE), 'the clamp names the panel width')
+
   const h = makeHarness({
     team: TEAM, binding: () => undefined, sessions: {}, box: { bottom: 40, left: 5_000 }
   })
@@ -447,10 +457,21 @@ test('the panel is kept inside the viewport, not just near the trigger', () => {
   assert.equal(typeof panel.props.style.left, 'number', 'the panel is placed by measurement')
   assert.ok(panel.props.style.left >= 16, 'never past the left edge')
   if (typeof innerWidth === 'number') {
-    assert.ok(panel.props.style.left + 420 + 16 <= innerWidth,
-      'and its declared width plus margin still fits inside the viewport')
+    assert.ok(panel.props.style.left + declared + 16 <= innerWidth,
+      `and its declared ${declared}px width plus margin still fits inside ${innerWidth}px`)
   }
   assert.equal(panel.props.style.top, 46, 'it hangs 6px below the trigger')
+})
+
+test('the clamp uses the width the stylesheet actually declares', () => {
+  // The previous test proves the clamp fits in the viewport; this one proves it is
+  // fitting the *right* panel. A widened stylesheet with an unchanged PANEL_WIDTH
+  // would still pass the viewport check while clamping 80px early, so the two numbers
+  // are compared directly here.
+  const declared = Number(SOURCE.match(/width:min\((\d+)px,\s*calc\(100vw - 32px\)\)/)?.[1])
+  const named = Number(SOURCE.match(/const PANEL_WIDTH = (\d+)/)?.[1])
+  assert.ok(Number.isFinite(declared) && Number.isFinite(named), 'both widths are literal')
+  assert.equal(named, declared, 'the clamp and the stylesheet declare the same panel width')
 })
 
 // ── tokens ────────────────────────────────────────────────────────────────────
@@ -514,4 +535,72 @@ test('the same mounted component survives the projection arriving late', () => {
   const tree = h.open()
   assert.notEqual(tree, null, 'the same instance renders once the projection arrives')
   assert.ok(find(tree, (node) => node.props?.className === 'qrm-trigger') !== undefined)
+})
+
+// ── layout ───────────────────────────────────────────────────────────────────
+
+test('a section label sits closer to its rows than to the section above it', () => {
+  // The roster label and the roster rows are siblings in one `qrm-block`, while the
+  // panel separates its blocks by a wider gap. Flat 10px spacing made the title, the
+  // label and the first row all equidistant, so nothing read as a group.
+  const h = makeHarness({ team: TEAM, binding: () => undefined, sessions: {} })
+  h.exported.apply(h.ctx)
+  h.setSessionStore({ projectionsBySession: { 'lead-1': { values: { agentTeam: TEAM } } } })
+  const tree = h.open({ })
+
+  const blocks = []
+  const collect = (node) => {
+    if (!node || typeof node !== 'object') return
+    if (Array.isArray(node)) return node.forEach(collect)
+    if (node.props?.className === 'qrm-block') blocks.push(node)
+    ;(node.children ?? []).forEach(collect)
+  }
+  collect(tree)
+  assert.ok(blocks.length >= 1, 'the roster is wrapped in a section block')
+
+  const block = blocks[0]
+  const label = (block.children ?? []).find((n) => n?.props?.className === 'qrm-section')
+  assert.ok(label, 'the label is inside the block, beside its rows')
+
+  const inner = SOURCE.match(/\.qrm-block\{[^}]*gap:(\d+)px/)
+  const outer = SOURCE.match(/\.qrm-panel\{[^}]*gap:(\d+)px/)
+  assert.ok(inner && outer, 'both gaps are declared')
+  assert.ok(Number(inner[1]) < Number(outer[1]),
+    `a label is closer to its rows (${inner[1]}px) than to the block above it (${outer[1]}px)`)
+})
+
+test('row separators sit between rows, not above the first one', () => {
+  // `border-top` on every row drew a rule immediately under the section label, which
+  // read as the label being underlined. The rule belongs between the rows.
+  const onCell = SOURCE.includes('.qrm-row{')
+  const between = SOURCE.includes('.qrm-row + .qrm-row{border-top:')
+  assert.ok(onCell, 'the row rule is still declared')
+  assert.ok(between, 'the separator is scoped to rows after the first')
+  const perRow = SOURCE.match(/\.qrm-row\{[^}]*\}/)?.[0] ?? ''
+  assert.ok(!perRow.includes('border-top'),
+    'the row itself carries no top border, so the label above it is not underlined')
+})
+
+test('the row gives way instead of overflowing the panel for a long error', () => {
+  // A failed member's `error` string lands in a nowrap chip. With `flex:none` on the
+  // meta neither side could shrink and the panel scrolled sideways for that one row.
+  const h = makeHarness({
+    team: { members: [member('lead-1', 'lead', 'lead', 'active'),
+      member('child-1', 'reviewer', 'teammate', 'failed', 'a very long failure reason that will not fit')],
+      tasks: [] },
+    binding: () => undefined, sessions: {}
+  })
+  h.exported.apply(h.ctx)
+  h.setSessionStore({ projectionsBySession: { 'lead-1': { values: { agentTeam: { members: [member('lead-1', 'lead', 'lead', 'active'), member('child-1', 'reviewer', 'teammate', 'failed', 'a very long failure reason that will not fit')], tasks: [] } } } } })
+  const tree = h.open({ })
+
+  const meta = find(tree, (n) => n?.props?.className === 'qrm-meta')
+  const chip = find(tree, (n) => n?.props?.className === 'qrm-chip')
+  assert.ok(meta && chip, 'the row renders its error chip')
+
+  const metaRule = SOURCE.match(/\.qrm-meta\{[^}]*\}/)?.[0] ?? ''
+  const chipRule = SOURCE.match(/\.qrm-chip\{[^}]*\}/)?.[0] ?? ''
+  assert.ok(/flex:0 1 auto|flex:1/.test(metaRule), 'the meta may shrink')
+  assert.ok(/min-width:0/.test(metaRule), 'and is allowed below its content width')
+  assert.ok(/text-overflow:ellipsis/.test(chipRule), 'so the chip ellipsizes instead')
 })

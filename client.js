@@ -23,9 +23,10 @@ window.__ModuleLoader__.load({
     // Click-time panel placement needs the panel's width before it is in the DOM.
     // Reading it back would mean measuring after a render that already put the panel in
     // the wrong place, so the two numbers the stylesheet uses are named here and the
-    // clamp is derived from them. `.qrm-panel` is `width:min(420px, 100vw - 32px)`, and
-    // PANEL_MARGIN is the 16px it keeps clear of the viewport edge.
-    const PANEL_WIDTH = 420
+    // clamp is derived from them. `.qrm-panel` is `width:min(340px, 100vw - 32px)`, and
+    // PANEL_MARGIN is the 16px it keeps clear of the viewport edge. Both literals must
+    // change together; the viewport test reads them rather than repeating 340.
+    const PANEL_WIDTH = 340
     const PANEL_MARGIN = 16
     const zh = {
       trigger: 'Quorum',
@@ -89,10 +90,21 @@ window.__ModuleLoader__.load({
       // Panel: the same elevation tokens the host panels use, plus a deliberate 1px
       // border — the elevation tokens resolve to a 0.5px ring on their own, which is
       // too faint to separate a popover from the conversation behind it.
-      '.qrm-panel{box-sizing:border-box;width:min(420px,calc(100vw - 32px));max-height:min(560px,calc(100vh - 96px));overflow:auto;position:fixed;z-index:120;display:flex;flex-direction:column;gap:10px;padding:16px 18px 14px;border-radius:var(--dsw-radius-lg);border:1px solid var(--dsw-alias-border-l3);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);box-shadow:var(--dsw-elevation-prominent),var(--dsw-shadow-lv2);font-size:13px;line-height:1.5}',
-      '.qrm-head{font-size:13px;font-weight:600;letter-spacing:-.01em}',
+      '.qrm-panel{box-sizing:border-box;width:min(340px,calc(100vw - 32px));max-height:min(560px,calc(100vh - 96px));overflow:auto;position:fixed;z-index:120;display:flex;flex-direction:column;gap:14px;padding:16px 18px 14px;border-radius:var(--dsw-radius-lg);border:1px solid var(--dsw-alias-border-l3);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);box-shadow:var(--dsw-elevation-prominent),var(--dsw-shadow-lv2);font-size:13px;line-height:1.5}',
+      // The title is a header band, not another line of text: it bleeds to the panel's
+      // edges and carries the rule that separates it from the roster beneath. Before
+      // this the title, the section label and the first row all sat at the same 10px
+      // distance, so none of them read as belonging to each other.
+      '.qrm-head{font-size:13px;font-weight:600;letter-spacing:-.01em;margin:0 -18px;padding:0 18px 10px;border-bottom:.5px solid var(--dsw-alias-border-l2)}',
+      // A section label and its rows are one unit; the label sits closer to its rows
+      // than to the section above it.
+      '.qrm-block{display:flex;flex-direction:column;gap:6px;min-width:0}',
       '.qrm-section{font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--dsw-alias-label-caption)}',
-      '.qrm-row{display:flex;align-items:center;gap:8px;justify-content:space-between;padding:7px 8px;margin:0 -8px;border-top:.5px solid var(--dsw-alias-border-l2);transition:background .12s ease}',
+      '.qrm-row{display:flex;align-items:center;gap:8px;justify-content:space-between;padding:7px 8px;margin:0 -8px;transition:background .12s ease}',
+      // Separators only between rows. Putting `border-top` on every row drew a rule
+      // immediately under the section label, which read as the label being underlined
+      // rather than as the rows being a list.
+      '.qrm-row + .qrm-row{border-top:.5px solid var(--dsw-alias-border-l2)}',
       // A teammate row navigates into that member's session, so it has to read as
       // actionable and stay keyboard-reachable; the Lead row says so with data-openable.
       '.qrm-row[data-openable="yes"]{cursor:pointer;border-radius:var(--dsw-radius-sm)}',
@@ -106,9 +118,13 @@ window.__ModuleLoader__.load({
       '.qrm-dot[data-phase="active"]{background:var(--dsw-alias-state-success-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-state-success-primary) 22%,transparent)}',
       '.qrm-dot[data-phase="failed"]{background:var(--dsw-alias-state-error-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-state-error-primary) 22%,transparent)}',
       '.qrm-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}',
-      '.qrm-meta{display:flex;align-items:center;gap:8px;flex:none;font-size:12px;color:var(--dsw-alias-label-tertiary)}',
-      '.qrm-phase{font-size:12px;color:var(--dsw-alias-label-tertiary)}',
-      '.qrm-chip{border-radius:999px;padding:1px 8px;font-size:11px;font-weight:500;line-height:18px;white-space:nowrap}',
+      // `flex:none` here was a latent overflow: a long `member.error` lands in the chip
+      // with `white-space:nowrap`, so neither the name nor the meta could give way and
+      // the panel's own `overflow:auto` produced a horizontal scrollbar for one bad
+      // row. The meta is now allowed to shrink and the chip ellipsizes instead.
+      '.qrm-meta{display:flex;align-items:center;gap:8px;flex:0 1 auto;min-width:0;font-size:12px;color:var(--dsw-alias-label-tertiary)}',
+      '.qrm-phase{flex:none;font-size:12px;color:var(--dsw-alias-label-tertiary)}',
+      '.qrm-chip{border-radius:999px;padding:1px 8px;font-size:11px;font-weight:500;line-height:18px;white-space:nowrap;min-width:0;overflow:hidden;text-overflow:ellipsis}',
       '.qrm-chip[data-state="ok"]{background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 18%,transparent);color:var(--dsw-alias-state-business-primary)}',
       '.qrm-chip[data-state="warn"]{background:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 18%,transparent);color:var(--dsw-alias-state-warn-primary)}',
       '.qrm-chip[data-state="bad"]{background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 18%,transparent);color:var(--dsw-alias-state-error-primary)}',
@@ -299,13 +315,14 @@ window.__ModuleLoader__.load({
         },
           h('div', { className: 'qrm-head' }, sessionId === leadId ? tr('lead') : tr('member')),
 
-          h('div', { className: 'qrm-section' }, tr('roster')),
-          teammates.length === 0 && members.length === 0
-            ? h('div', { className: 'qrm-none' }, tr('none'))
-            : members.map(memberRow),
+          h('div', { className: 'qrm-block' },
+            h('div', { className: 'qrm-section' }, tr('roster')),
+            teammates.length === 0 && members.length === 0
+              ? h('div', { className: 'qrm-none' }, tr('none'))
+              : members.map(memberRow)),
           notice === null ? null : h('div', { className: 'qrm-notice', role: 'status' }, notice),
 
-          tasks.length === 0 ? null : h('div', null,
+          tasks.length === 0 ? null : h('div', { className: 'qrm-block' },
             h('div', { className: 'qrm-section' }, tr('tasks')),
             tasks.map((task) => h('div', { className: 'qrm-task', key: task.id },
               h('div', { className: 'qrm-taskTitle' },
