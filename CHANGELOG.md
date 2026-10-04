@@ -19,6 +19,18 @@ in `package.json` `peerDependencies` and enforced at install time.
   The row is a keyboard-reachable `role="button"`; a member session that has been
   released reports that it cannot be opened rather than swallowing the click.
 
+### Verified
+
+- **The cost tiers fired for the first time, and the budget turned out to be narrower
+  than it reads.** With `maxBilledTokens` lowered to 60,000, one real run crossed soft and
+  hard: soft refused `spawn_teammate` ("cost budget reached 612% ... conclude with the
+  members you already have instead of adding another"), hard refused `write` ("this team
+  is in report-only mode"), and the target file was never created. The same run billed
+  **228,639 — 381% of the budget** — because the guard is checked per tool execution and
+  cannot interrupt reasoning between tool calls. `maxBilledTokens` is therefore a
+  tool-surface budget, not a spending ceiling; documented in `docs/verification.md` D8,
+  `docs/architecture.md`, and the README.
+
 ### Changed
 
 - **The evidence gate no longer widens when it cannot locate a member's report.** If the

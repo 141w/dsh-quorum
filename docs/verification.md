@@ -825,15 +825,99 @@ LICENSE  README.md  client.js  cordis.patch.yml  docs  index.js  package.json
 
 `.probe/` 与 `HANDOFF-*.md` 不在其中（后者已随 `44ce77d` 从 HEAD 移出）。
 
+## D8：成本三档真机验证（2026-10-04 16:3x，首个 PASS）
+
+前七节里成本纪律一直是唯一没有真机证据的一层：budget 只在单测里被驱动过，从没有一次真实团队跑越过任何档位。本节是第一次，判据是「越过了档位，且日志里有对应的拒绝」，不是「模型说它省了钱」。
+
+### 1. 让一轮必爆：把预算压到 60,000
+
+默认 `maxBilledTokens` 是 2,000,000，一轮真实团队只用到 68%，所以不动配置永远看不到降级。覆盖文件由 `.probe/make-budget-override.mjs` 生成（用 `dsh --profile <p> --dump-config` 取权威 config，再用 YAML 库整篇 `stringify`，不手工缩进）：
+
+```
+$ node .probe/make-budget-override.mjs quorum-live 60000
+wrote …/quorum-live/cordis.patch.yml
+  entries: ui-settings-general, llm-pi-ai, agent-default-model, quorum
+  quorum budget: maxBilledTokens: 60000
+                 softTier: 0.7
+                 hardTier: 0.9
+```
+
+**这里我犯过一次错，值得记下**：第一版覆盖文件是手工缩进拼出来的，`roles:` 落在了与 `config:` 同级的位置。插件只看到 `undefined` config，直接拒绝武装：
+
+```
+quorum (dsh-quorum): Error: quorum: config must be an object
+```
+
+那一轮跑完了、NOTES.md 也正常写出来了，**看起来像一次成功的运行**，但它对成本纪律零证据——守卫从未生效。现在 `validateConfig` 会指名到键地拒绝，所以这类错误至少是响的。
+
+### 2. 判据工具的输出（权威，读落盘日志）
+
+```
+$ node .probe/cost-tier-check.mjs --lead session-00e8d526-c4a3-41bb-b777-0abf4a7dd741 --budget 60000
+lead   session-00e8d526-…  calls= 10  billed=129,823
+member 1fec7a06-…          calls=  9  billed= 98,816
+billed total: 228,639  (381.1% of budget)
+crossed soft: YES    crossed hard: YES
+soft first reached at seq 26 (turn 1) in session-00e8d526-…
+hard first reached at seq 26 (turn 1) in 1fec7a06-…
+messages billed after the soft threshold: 15
+VERDICT: PASS — a tier was crossed and the guard recorded a denial.
+```
+
+成员归属按 Lead 自己的 `team/member` 行计算，只统计严格成员会话（同节首段的规则）；同一工作区里并发跑过的会话不计入。
+
+### 3. 两档拒绝的原文
+
+```
+[soft] seq 66 tool=spawn_teammate isError=true
+  Error: cost budget reached 612% of 60000 billed tokens;
+         conclude with the members you already have instead of adding another
+[hard] seq 71 tool=write isError=true
+  Error: cost budget reached 660%; this team is in report-only mode,
+         summarise what you know and name what remains unverified
+```
+
+两条都是**工具执行层**的拒绝（`tool/result` + `isError: true`），不是提示词里的请求。soft 档挡住的是 `spawn_teammate`——第二个 teammate（`fixer`）因此从未被创建，所以成员数停在 1；hard 档挡住的是 Lead 自己的 `write`。
+
+### 4. 权威判定在磁盘上，不在模型的自述里
+
+```
+$ ls /tmp/quorum-budget-target/NOTES.md
+ls: …: No such file or directory
+```
+
+任务要求 Lead 最后自己 `write NOTES.md`。文件不存在 = hard 档的拒绝真的生效了。这是本节最重要的一条：**判据是文件系统，不是日志里的话**。
+
+### 5. 本轮量出来的真问题：超支 3.8 倍，以及为什么
+
+这是之前从未量化的事实。预算在 **100% 之后并不会让运行停下来**：
+
+- Lead 累计 129,823；首次越过 soft（42,000）在 seq 40，当时累计 44,355；**越过之后还有 6 条计费消息，合计 85,468**。
+- 成员累计 98,816；首次越过 soft 在 seq 31，当时 42,022；**之后 5 条合计 56,794**。
+- 团队合计 228,639 / 60,000 = **381%（超支 3.8 倍）**，且 `messages billed after the soft threshold: 15`。
+
+机制：预算只在**工具执行**时被检查（guard per tool execution）。模型在两次工具调用之间的推理步、以及被拒后为了重述结论而继续生成的回合，都会继续计费，而这些步没有工具调用可以拦。所以准确的表述不是「预算 100% 就停」，而是：
+
+> 档位到达后，**工具面被切断**（不能再加成员、不能再写盘），但**已经开始的思考与总结无法被中断**。
+
+这条改变了 README 和 `architecture.md` 里对成本纪律的措辞：它是**工具面预算**，上限由「一轮里工具调用之间的推理量」决定，实际可以超出标称值数倍。想让它更贴身，只能把检查点下沉到模型回合边界——那不是本插件能做的（见 `D7-upstream-gaps.md`）。
+
+### 6. 本轮没做的
+
+- 三档里只有 soft/hard 被真实触发；**soft 档的「提示不拒绝」行为没有被单独观测到**（本轮从越过 soft 到越过 hard 之间只隔了很短的一段，soft 的提示是否改变了模型的策略无法从本轮区分）。
+- 没有验证被拒之后 Lead 的**最终答复质量**——它有没有如实说出哪些没验证。那要读 Lead 的最后一条消息并人工判断，不是机制判定。
+- 只跑了 1 轮。`spend` 是按 teamId 聚合的常驻 Map，重启清零，所以每一轮都要在一次运行内越过，不能跨轮累计（这一点已在 §1 的陷阱里记录）。
+
 ## 已知缺口
 
 1. **拒绝记录无法写进会话日志。** 不是「目前还没写」，而是机制不允许：插件自定义事件类型能写能落盘，但读回来时会被 `KNOWN_SESSION_EVENT_TYPES` 拒绝，且 live `Session.append()` 无法设置 `ignorable` 标记，代价是整个会话永久打不开（见上方纪律 D 实验）。审计要持久，必须换载体；`ctx.logger` 在本机构建里没有任何可见出口。
 2. **`restrict()` 不足以作为强制手段**（见 `architecture.md`），但它作为「提示词层可见性收窄」的用途还没验证是否真的减少了模型误调用。
 3. **终止纪律：法定人数的判定、等待与证据门禁已实现（D3b + D4），形状切换门禁未实现。** 「踢醒循环」按实测排除——`send_message` 本来就能冷恢复唤醒未运行的成员（回执 `status:"accepted"`），缺的从来不是踢醒，是等待加判据。
-4. **纪律 C 的超限实验仍未做**；D2 第二步（真实拒绝）因第一步被否决而没有执行，本次 0 token。
+4. ~~**纪律 C 的超限实验仍未做**~~ —— **2026-10-04 已完成，见 D8**：预算压到 60,000 后一轮内越过 soft 与 hard，两档都在工具执行层留下 `isError` 拒绝，`NOTES.md` 未被写出。同一轮量出的新缺口见第 11 条。其余两档的相对强度（soft 的「只提示」具体改变了模型什么策略）仍未被单独观测。
 5. **D3a 的两步验收未跑**：全新空会话的「stdout 无 `[quorum] policing` 行」（需 UI 点一次，0 token）与「spawn 后 Lead 与成员各注册一次 + scout 仍被机制拦住写文件」（需 Lead 真派一个 reviewer，约 76K billed）。本轮 0 token。
 6. **`quorum_wait` 还没被模型真调过一次**，证据门禁同样只到「判定与读面对真实日志成立」这一层。已证的是：判定逻辑（单测 8–25）、投影读面与归属规则对**真实落盘日志**成立（D3b 第 3 节、D4 第 4 节）、`ctx.sessions` 注入有效、工具在 Lead 作用域注册成功且注册路径不抛。未证的是模型拿到这个工具后会不会用对——那需要一次真机轮次，成本见 D3b 交接文档第 4 条的报价，发请求前要先报预估并等确认。
 7. **证据门禁的强度上限：一次成功的工具调用 ≠ 结论正确。** 它证的是「成员在汇报之前确实动过真工具」，不证「它的结论与工具输出一致」。口径与能被绕开的三条路径写在 `architecture.md` 的「证据门禁」一节，不在此重复。
 8. **重启会把已达成的法定人数打回 `unverifiable`。** 成员会话不在本进程时读不到日志（D4 第 4 节实测 `live=false`），这是 fail-closed 的选择而非缺陷，但 Lead 侧的后果（重启后要重新催一轮证据）没有被任何机制提醒，只写在返回文本里。
 9. **门禁依赖的两个读面在上游头文件里是 `@deprecated`**（`Session.ownEvents()` / `snapshotEvents()`，注释原文「new calls are prohibited」）。当前无替代同步读面，替代方案是 `dsh-session-query` 那条 SQLite 路，代价是要引一层查询后端依赖；上游若真删这两个方法，本门禁会退化成全部 `unverifiable`（依旧不会放行，但会失去可用性）。
 10. **浏览器拿不到 mailbox。** `agentTeam` 的 wire view 是 `{members, tasks, failure}`（`projection.js:269`），法定人数、证据判定、预算档位都无法在客户端直接读出；头部面板因此只展示角色卡与任务板。见 D6 第 3 节——第一版展示过假的 `0/2`。
+11. **预算只在工具执行处被检查，所以真实花费可以数倍于标称预算。** D8 实测：预算 60,000 的一轮实际计费 228,639（**381%**），其中越过 soft 之后仍有 15 条计费消息。到达档位后**工具面被切断**（不能再加成员、不能再写盘），但两次工具调用之间的推理步、以及被拒后为了重述结论而继续生成的回合都无法被中断。所以成本纪律的准确名称是「工具面预算」，不是「花费上限」——要让上限贴身，检查点必须下沉到模型回合边界，那是上游的能力（见 `D7-upstream-gaps.md`）。README 与 `architecture.md` 已按这个口径改写。
