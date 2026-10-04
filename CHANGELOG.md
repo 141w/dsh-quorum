@@ -42,11 +42,15 @@ in `package.json` `peerDependencies` and enforced at install time.
   / red failed), a chevron on the rows that navigate, a callout-styled refusal notice, and
   an explicit "no members yet" state instead of an empty section.
 
-- **The theme-token check now reads the theme instead of trusting a hand-kept list.** The
-  old list had drifted into approving eight tokens as "used by the host's own panels"
-  while missing ones the theme does define; the Theme Inspect provider only advertises a
-  curated subset (15), so `test/client-half.test.js` now parses the token set out of
-  `dsh-client-ui-theme/lib/client.js` and fails loudly if that file is absent.
+- **The theme-token check no longer trusts a hand-kept list.** The old list had drifted
+  into approving eight tokens as "used by the host's own panels" without checking, while
+  missing ones the theme does define. The authority is the Theme's definition file
+  (`dsh-client-ui-theme/lib/client.js` — the Theme Inspect provider advertises only a
+  curated subset, 15 of ~400), which ships only with an installed runtime. So its token
+  set is frozen into `test/fixtures/theme-tokens.json` by `node test/theme-tokens.mjs`,
+  and `test/client-half.test.js` checks two things: every token the panel uses is in that
+  snapshot, and — whenever a runtime is present — the snapshot still contains everything
+  the installed theme defines. Regenerate after a runtime upgrade.
 
 ### Verified
 
