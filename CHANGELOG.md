@@ -14,6 +14,23 @@ followed it (D12) found a defect that made the gate's verdict regress mid-round.
 `0.3.0` would have shipped a version whose termination discipline could lock a team that had
 already earned the right to write. Read **0.3.0 → Breaking** together with the fix below.
 
+### Published
+
+- **`dsh-quorum@0.3.1` is on the public registry** (2026-10-08), installable as
+  `dsh plugin --profile <name> add -w dsh-quorum@0.3.1`; measured 24.5s on a cold profile,
+  with `--dump-config` composing the `# == dsh-quorum` layer and the shipped file list
+  excluding `test/` and `.probe/` (`docs/verification.md` D14). Two facts about that
+  publish worth knowing before you trust or reproduce it: it carries **no signed
+  provenance** (a maintainer-machine publish runs without `--provenance`; lineage is pinned
+  instead by `gitHead = fc22584`, identical to the `v0.3.1` tag), and the registry record
+  also contains npm's own `0.0.0-stage` placeholder, created when the web-auth flow opens
+  and left behind 56 seconds later — so an `npm view` that answers `0.0.0-stage` is a
+  timing artifact, and the correct reaction is to re-check rather than re-publish.
+- **No GitHub Release exists for `v0.3.1`, deliberately.** The release workflow publishes on
+  the `released` event, and `0.3.1` is already on the registry, so publishing a release for
+  it would produce an `E409` failure rather than a release. Trusted publishing gets
+  configured now; the first CI-published version is `0.3.2`.
+
 ### Fixed
 
 - **A team's verdict could regress while nobody changed anything, and the shape gate acted on it.** Evidence was

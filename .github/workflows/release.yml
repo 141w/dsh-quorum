@@ -30,6 +30,12 @@ name: release
 #   whole path without publishing, run the workflow manually with
 #   `dry_run: true`.
 #
+#   Done: step 1-3 for 0.3.1 on 2026-10-08 (docs/verification.md D14). It was published
+#   from a maintainer machine and therefore carries no provenance attestation, and it
+#   deliberately has NO GitHub Release: this workflow fires on the `released` event and
+#   `0.3.1` already exists on the registry, so creating that release now would only
+#   produce an E409. The first CI-published version is 0.3.2.
+#
 # ── Keeping the attestation honest ────────────────────────────────────────────
 #
 # `repository.url` in package.json must keep matching this repository. If it

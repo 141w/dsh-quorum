@@ -23,16 +23,19 @@ Three bundles have to land in one profile, in this order: the web app, the exper
 ```sh
 dsh plugin --profile <name> add -w @deepseek-ai/dsh-web-app@0.2.0-rc.2
 dsh plugin --profile <name> add -w @deepseek-ai/dsh-experimental-agent-team-profile@0.2.0-rc.2
-dsh plugin --profile <name> add -w github:141w/dsh-quorum
+dsh plugin --profile <name> add -w dsh-quorum@0.3.1
 ```
 
-`github:` is how you install it today. **The package is not published to npm yet**, so `add dsh-quorum` resolves to nothing, and no in-app search will find it either — dsh has no plugin marketplace, only a form that takes a package name, a GitHub repo or a local directory. What makes a dsh plugin findable on npm is the keyword convention (`dsh`, `dsh-plugin`, `deepseek-harness`), which this package declares for when it is published.
+**Install it by name.** `dsh-quorum@0.3.1` went to the public registry on 2026-10-08, so `add -w dsh-quorum@<version>` resolves, and `latest` points at a real version. Note that dsh has no plugin marketplace regardless — the in-app form takes a package name, a GitHub repo or a local directory, and nothing searches npm for you. What makes a dsh plugin findable on npm is the keyword convention (`dsh`, `dsh-plugin`, `deepseek-harness`), which this package declares.
 
-That first publish cannot be done by CI: npm attaches a trusted publisher to a package that already exists, so `0.x` has to go out from a maintainer machine once (`npm login` with 2FA, then `npm publish --access public`, then the three-field Trusted Publisher entry on npmjs.com). `.github/workflows/release.yml` documents the sequence, and every release after the first goes through it.
+The first version could not be published by CI: npm attaches a trusted publisher to a package that already exists, so `0.3.1` went out from a maintainer machine (`npm login` with 2FA, then `npm publish --access public`), and releases after it go through `.github/workflows/release.yml`. Two consequences of that order, stated because both are checkable and neither is obvious:
 
-**The first command is slow, and it is not stuck.** `@deepseek-ai/dsh-web-app` pulls close to 300 packages; measured on this machine it took 20 minutes with one automatic socket-timeout retry. The other two take seconds.
+- **`0.3.1` carries no signed provenance** — a maintainer-machine publish runs without `--provenance`, so `npm view dsh-quorum@0.3.1 attestations` returns *Not found* and `npm audit signatures` reports nothing for it. Its lineage is instead pinned by `gitHead = fc22584`, which is exactly the `v0.3.1` tag's commit. From the next CI release onward, attestations are published and this workaround is unnecessary.
+- The registry record also contains a `0.0.0-stage` version, which is **npm's own placeholder**, created the moment the publish web-auth flow starts (`created 05:25:20`) and left behind when `0.3.1` landed 56 seconds later and moved `latest`. If `npm view` answers `0.0.0-stage`, you are inside that window — re-run, don't re-publish. `docs/verification.md` D14 has the raw timestamps.
 
-Pin it if you care about what actually runs — upstream's own guidance is to lock the revision, because a later push to the default branch would otherwise change the code that executes at install time:
+**The first command is slow, and it is not stuck.** `@deepseek-ai/dsh-web-app` pulls close to 300 packages; measured on this machine it took 20 minutes with one automatic socket-timeout retry. The other two take seconds — installing `dsh-quorum` from npm measured 24.5s on a cold profile (D14), against 98s for the same package over `github:` (D11).
+
+Pin a version if you care about what actually runs, either the npm version or the git revision. Upstream's own guidance is to lock the revision, because a later push to the default branch would otherwise change the code that executes at install time:
 
 ```sh
 dsh plugin --profile <name> add -w 'github:141w/dsh-quorum#v0.3.1'

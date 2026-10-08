@@ -1229,6 +1229,94 @@ D12 是 433,888 / 21+4+2=27 calls，这轮 159,334 / 12 calls。差别几乎全�
 
 不能声称：预算档位与形状档位在同一轮里互相干扰的行为（这轮预算被抬到 20M，故意没让它们相遇）；重启之后同一团队会不会重新锁住（已知会，见「已知缺口」第 12 条）；`waiver` 之外用户会不会找到别的绕路方式（例如让成员用 shell 写文件——成员卡是 scout 时被机制拒绝，但 `ship` 卡带 `bash` 仍是文档里明写的边界）。
 
+## D14：npm 首发布落地，以及 `0.0.0-stage` 这个假信号（2026-10-08 13:25–13:28，0 token）
+
+她按 P0 执行了首发布。第一眼的读数像失败了：
+
+```
+$ npm view dsh-quorum version dist-tags
+version = '0.0.0-stage'
+dist-tags = { latest: '0.0.0-stage' }
+
+$ cd ~ && dsh plugin --profile refcheck add -w dsh-quorum@0.3.1
+ ERR_PNPM_NO_MATCHING_VERSION  No matching version found for dsh-quorum@0.3.1
+ The latest release of dsh-quorum is "0.0.0-stage".
+```
+
+**这不是失败，也不是被审核卡住，是 npm 自己的占位版本被读到了。** 注册表文档的时间戳直接给出因果：
+
+```
+$ curl -s https://registry.npmjs.org/dsh-quorum | (读取 _id / dist-tags / versions / time)
+_id: dsh-quorum
+dist-tags: {"latest":"0.3.1"}
+versions: [ '0.0.0-stage', '0.3.1' ]
+time: { created: '2026-10-08T05:25:20.748Z',
+        modified: '2026-10-08T05:26:16.209Z',
+        '0.0.0-stage': '2026-10-08T05:25:20.748Z',
+        '0.3.1': '2026-10-08T05:26:16.036Z' }
+_rev: 2-133f186fb5eb44f6f659ea167fc2c4df
+```
+
+`0.0.0-stage` 与 `created` 同一毫秒（05:25:20.748）——也就是她点开 `Authenticate your account at: …/auth/cli/…` 那一刻，npm 就先把包记录建了出来并放了个占位版本；`0.3.1` 在 56 秒后落地并把 `latest` 翻过去（`_rev` 是 `2-…`，两次修订）。她敲 `npm view` 落在窗口内，所以看到 `latest: 0.0.0-stage`；pnpm 那次 `NO_MATCHING_VERSION` 是同窗口的解析结果，不是包坏了。**处置只有一条：重查，别重发。** 重发会撞 `E409`，而在 npm 上版本删不掉，只能 deprecate。
+
+### 1. 落地后的实测（三件事分别验，不拿一条推另一条）
+
+```
+$ npm view dsh-quorum version dist-tags --prefer-online
+version = '0.3.1'
+dist-tags = { latest: '0.3.1' }
+
+$ npm view dsh-quorum@0.3.1 dist.tarball dist.integrity gitHead
+dist.tarball = 'https://registry.npmjs.org/dsh-quorum/-/dsh-quorum-0.3.1.tgz'
+dist.integrity = 'sha512-xOLaol+zMQRGdg5BMBzIzr0GKVcKEJlVnI0qY6dlLU5FKLwsHecqh2sLHBAxgZ5rNBwzHo1Fuq1IWR4NpPuqLA=='
+gitHead = 'fc22584109ef597e293d62fe58897fa97e6fb763'
+
+$ git rev-list -n1 v0.3.1
+fc22584109ef597e293d62fe58897fa97e6fb763      # 与 gitHead 逐字符相同
+
+$ curl -sI https://registry.npmjs.org/dsh-quorum/-/dsh-quorum-0.3.1.tgz | head -1
+HTTP/2 200
+```
+
+`gitHead == v0.3.1 的提交` 是这次唯一的血缘证明，因为**首发布没有签名 attestation**：她跑的是 `npm publish --access public`（无 `--provenance`，机器上发本来也没有 OIDC 可用），所以
+
+```
+$ curl -s "https://registry.npmjs.org/-/npm/v1/attestations/dsh-quorum@0.3.1"
+{"error":"Not found"}
+```
+
+这条不掩盖：0.3.1 的可信度靠 `gitHead` + 本地 `npm pack --dry-run` 的 shasum 对得上（`78847c7ad084e0af298d518587ef59e40c282404`），而不是靠注册表签名。下一个版本走 CI（`npm publish --access public --provenance`）之后才有 attestation。
+
+### 2. 从 npm 装：新 profile、25 秒、层能组合
+
+```
+$ cd ~ && dsh plugin --profile npmcheck add -w dsh-quorum@0.3.1
+dependencies:
++ dsh-quorum 0.3.1
+Done in 24.5s using pnpm v9.15.9
+
+$ node -p "require(process.env.HOME+'/.dsh/profiles/npmcheck/package.json').dependencies"
+{ 'dsh-quorum': '0.3.1' }                  # 是 registry 版本号，不是 github: 也不是 link:
+
+$ dsh --profile npmcheck --dump-config | grep -A4 "id: quorum"
+- id: quorum
+  name: dsh-quorum
+  config:
+    roles:
+      lead:
+
+$ ls ~/.dsh/profiles/npmcheck/node_modules/dsh-quorum/
+CHANGELOG.md  LICENSE  README.md  client.js  cordis.patch.yml  docs  index.js  package.json
+```
+
+`files` 白名单生效：`test/`、`.probe/`、`HANDOFF-*.md` 都没进包。24.5s 对比 D11 走 `github:` 的 98s，差在 pnpm 要为 git ref 解析并 fetch 整个仓库。
+
+一处我自己差点写错的读法要记下来：她在 refcheck 上跑 `--dump-config` 看到 `- id: quorum` 就以为 npm 装成功了——**那不是证据**。refcheck 里早就装着 `github:141w/dsh-quorum#v0.3.0`，那次 `add` 失败并没有改动已有依赖，所以行本来就在。判断"从 npm 装到了"只能看依赖规格变成 `'0.3.1'`（上面 `node -p` 那一行），这也是我另开 `npmcheck` profile 而不是复用 refcheck 的原因。
+
+### 3. GitHub Release 现在不能建
+
+`v0.3.1` 故意**不建** Release：release workflow 只在 `released` 事件上跑 `npm publish --access public --provenance`，而 `0.3.1` 已在 registry 上，建了就会得到一条 `E409` 红记录。顺序改为：把 Trusted Publisher 三项在 npmjs.com 上填好，下一个版本（`0.3.2` 起）再由 Release 触发 CI 发布。
+
 ## 已知缺口
 
 1. **拒绝记录无法写进会话日志。** 不是「目前还没写」，而是机制不允许：插件自定义事件类型能写能落盘，但读回来时会被 `KNOWN_SESSION_EVENT_TYPES` 拒绝，且 live `Session.append()` 无法设置 `ignorable` 标记，代价是整个会话永久打不开（见上方纪律 D 实验）。审计要持久，必须换载体；`ctx.logger` 在本机构建里没有任何可见出口。
