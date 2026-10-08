@@ -45,7 +45,9 @@ name: release
 #   from a maintainer machine and therefore carries no provenance attestation, and it
 #   deliberately has NO GitHub Release: this workflow fires on the `released` event and
 #   `0.3.1` already exists on the registry, so creating that release now would only
-#   produce an E409. The first CI-published version is 0.3.2.
+#   produce an E409. The first CI-published version is 0.3.3, not 0.3.2 — v0.3.2's two
+#   attempts failed on the CLI version note above, and a re-run cannot fix a tag whose
+#   workflow file predates the fix (docs/verification.md D18).
 #
 # ── Keeping the attestation honest ────────────────────────────────────────────
 #

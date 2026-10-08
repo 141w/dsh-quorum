@@ -857,8 +857,10 @@ export function apply(ctx, config) {
       // A tool the model does not know it has is a tool that does not exist.
       try {
         // Every field below is load-bearing, and `id` is the one that was missing
-        // until 0.3.2. `agent.inject()` takes a `UserMessage` — `MessageBase` requires
-        // `id` (dsh-llm/lib/types/message.d.ts:124-133, "stable identity preserved
+        // until 0.3.2 (the fix was authored for that release; 0.3.3 is where it
+        // reaches npm — see the changelog). `agent.inject()` takes a `UserMessage`:
+        // `MessageBase` requires `id` (dsh-llm/lib/types/message.d.ts:124-133,
+        // "stable identity preserved
         // across every representation boundary"), and the session validator enforces
         // it on reload: a message without one is written as a `user/message` lacking an
         // identified message, and the conversation then never opens again

@@ -6,14 +6,39 @@ While `dsh` itself is `0.2.x` (alpha/rc), a `0.x` version here means: minor bump
 behaviour or the role-card semantics, patch bumps do not. The compatible `dsh` range is declared
 in `package.json` `peerDependencies` and enforced at install time.
 
+## 0.3.3 - 2026-10-08
+
+**The first release published by CI, and the first with signed provenance.** Its code is
+identical to `0.3.2` — nothing about plugin behaviour, the panel, or the disciplines
+changed between the two — so if you already installed `github:…#v0.3.2` you do not need
+to move. `0.3.2` remains a git tag that was never published; read its entry below for
+what the fix actually is.
+
+The number exists because of how the release is gated, not because of what shipped. The
+publish job runs only on a GitHub `released` event, and re-running the failed run reuses
+the workflow file **from that tag** — which still let Node 22 supply npm 10.9.9. Trusted
+publishing requires CLI ≥ 11.5.1, so the only way to publish with a working authenticator
+was a new tag pointing at a commit that contains the fix. Moving `v0.3.2` was not an
+option: it is cited as an installed-from-tag verification (`docs/verification.md` D11,
+D16).
+
+### Fixed
+
+- **CI publishing authenticated with nothing.** `.github/workflows/release.yml` asked for
+  `node-version: '22.x'` and took the npm that came with it (10.9.9). That client still
+  mints a provenance statement — the signing call goes to sigstore, not to the registry —
+  but it never exchanges the OIDC token for a registry credential, so the `PUT` left
+  anonymous and npm answered `404 Not found` rather than 401/403. The misleading part was
+  the log line immediately before the failure, which reads like the identity was accepted.
+  The job now installs a pinned npm (12.2.0, the version the maintainer machine uses) and
+  asserts the pin is what `npm --version` reports. `docs/verification.md` D18.
+
 ## 0.3.2 - 2026-10-08
 
-**Publish status: tagged, not yet on npm.** The CI release ran and npm refused the
-`PUT` with `404` because the workflow's OIDC identity is not yet a trusted publisher on
-this package — provenance was minted and pushed to the sigstore transparency log first,
-so the missing piece is one npmjs.com setting, not the pipeline
-(`docs/verification.md` D16). Until it is configured and the job re-run, the fix installs
-from the tag: `dsh plugin --profile <name> add -w 'github:141w/dsh-quorum#v0.3.2'`.
+**Publish status: never published.** The CI release ran twice and npm refused the `PUT`
+with `404` both times. The cause was ours, not the registry configuration — see `0.3.3`
+above — and fixing it required a new tag, so this version stays git-only. The fix it
+carries is what `0.3.3` ships to npm.
 
 Also shipped with this release's remediation: `.probe/repair-bricked-sessions.mjs`, which
 repairs the sessions the defect already bricked. **All 12 damaged conversations on this

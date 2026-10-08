@@ -23,20 +23,16 @@ Three bundles have to land in one profile, in this order: the web app, the exper
 ```sh
 dsh plugin --profile <name> add -w @deepseek-ai/dsh-web-app@0.2.0-rc.2
 dsh plugin --profile <name> add -w @deepseek-ai/dsh-experimental-agent-team-profile@0.2.0-rc.2
-dsh plugin --profile <name> add -w dsh-quorum@0.3.2
+dsh plugin --profile <name> add -w dsh-quorum@0.3.3
 ```
 
-**Install it by name.** `dsh-quorum@0.3.1` is on the public registry, so `add -w dsh-quorum@<version>` resolves and `latest` points at a real version. **`0.3.2` is tagged and its CI publish is waiting on one npm setting** — the GitHub Actions identity has no trusted publisher on the package yet, so npm answers the `PUT` with `404` (`docs/verification.md` D16; the provenance statement itself was minted and logged). Until that is configured, install the fix from the tag:
+**Install it by name.** `dsh-quorum` is on the public registry, so `add -w dsh-quorum@<version>` resolves and `latest` points at a real version. `0.3.3` is the current release and the first one published by CI — which means it is also the first that carries a signed provenance attestation you can check with `npm audit signatures`. `0.3.2` never reached npm: its publish failed for a reason that could only be fixed by cutting a new tag (`docs/verification.md` D16, D18 and the changelog), so if you already installed `github:141w/dsh-quorum#v0.3.2` you have the same code and do not need to move.
 
-```sh
-dsh plugin --profile <name> add -w 'github:141w/dsh-quorum#v0.3.2'
-```
-
-> **Upgrade if you are on `0.1.0`–`0.3.1`.** The message this bundle injects to tell a Team Lead that `quorum_wait` exists was written without the `id` and `role` the session validator requires, so on the runs where that message became its own `user/message`, **the conversation could never be opened again.** 12 of the 53 stored sessions on the machine that develops this plugin carry the event, all 12 written by it. `0.3.2` fixes the payload; damaged sessions are not repaired by upgrading — see `docs/verification.md` D15. Note that dsh has no plugin marketplace regardless — the in-app form takes a package name, a GitHub repo or a local directory, and nothing searches npm for you. What makes a dsh plugin findable on npm is the keyword convention (`dsh`, `dsh-plugin`, `deepseek-harness`), which this package declares.
+> **Upgrade if you are on `0.1.0`–`0.3.1`.** The message this bundle injects to tell a Team Lead that `quorum_wait` exists was written without the `id` and `role` the session validator requires, so on the runs where that message became its own `user/message`, **the conversation could never be opened again.** 12 of the 53 stored sessions on the machine that develops this plugin carry the event, all 12 written by it. `0.3.3` fixes the payload; damaged sessions are not repaired by upgrading — see `docs/verification.md` D15. Note that dsh has no plugin marketplace regardless — the in-app form takes a package name, a GitHub repo or a local directory, and nothing searches npm for you. What makes a dsh plugin findable on npm is the keyword convention (`dsh`, `dsh-plugin`, `deepseek-harness`), which this package declares.
 
 The first version could not be published by CI: npm attaches a trusted publisher to a package that already exists, so `0.3.1` went out from a maintainer machine (`npm login` with 2FA, then `npm publish --access public`), and releases after it go through `.github/workflows/release.yml`. Two consequences of that order, stated because both are checkable and neither is obvious:
 
-- **`0.3.1` carries no signed provenance** — a maintainer-machine publish runs without `--provenance`, so `npm view dsh-quorum@0.3.1 attestations` returns *Not found* and `npm audit signatures` reports nothing for it. Its lineage is instead pinned by `gitHead = fc22584`, which is exactly the `v0.3.1` tag's commit. From the next CI release onward, attestations are published and this workaround is unnecessary.
+- **`0.3.1` carries no signed provenance** — a maintainer-machine publish runs without `--provenance`, so `npm view dsh-quorum@0.3.1 attestations` returns *Not found* and `npm audit signatures` reports nothing for it. Its lineage is instead pinned by `gitHead = fc22584`, which is exactly the `v0.3.1` tag's commit. From `0.3.3` onward the attestation is published by CI and that workaround is unnecessary.
 - The registry record also contains a `0.0.0-stage` version, which is **npm's own placeholder**, created the moment the publish web-auth flow starts (`created 05:25:20`) and left behind when `0.3.1` landed 56 seconds later and moved `latest`. If `npm view` answers `0.0.0-stage`, you are inside that window — re-run, don't re-publish. `docs/verification.md` D14 has the raw timestamps.
 
 **The first command is slow, and it is not stuck.** `@deepseek-ai/dsh-web-app` pulls close to 300 packages; measured on this machine it took 20 minutes with one automatic socket-timeout retry. The other two take seconds — installing `dsh-quorum` from npm measured 24.5s on a cold profile (D14), against 98s for the same package over `github:` (D11).
@@ -44,7 +40,7 @@ The first version could not be published by CI: npm attaches a trusted publisher
 Pin a version if you care about what actually runs, either the npm version or the git revision. Upstream's own guidance is to lock the revision, because a later push to the default branch would otherwise change the code that executes at install time:
 
 ```sh
-dsh plugin --profile <name> add -w 'github:141w/dsh-quorum#v0.3.2'
+dsh plugin --profile <name> add -w 'github:141w/dsh-quorum#v0.3.3'
 ```
 
 Measured for `v0.1.0` on 2026-10-04: resolves in 7.6s, records `github:141w/dsh-quorum#v0.1.0` in the profile, and `--dump-config` still shows the `# == dsh-quorum` layer. The same check for `v0.3.0` is recorded in `docs/verification.md` D11; `v0.3.1` supersedes it before anything reached npm, because D12 found a defect in that release (see the changelog).

@@ -1425,6 +1425,8 @@ npm error 404  'dsh-quorum@0.3.2' is not in this registry.
 
 不依赖这套 UI 的兜底：`0.3.1` 本来就是她本机 `npm publish --access public` 手工发的（`npm whoami` 现在仍是 `wwq9979`），照同一条路发 `0.3.2` 一样能止血，代价是**这个版本没有 provenance**（`--provenance` 走 OIDC，只有 CI 里拿得到）。
 
+> **本节这段归因在 D18 被推翻。** 上面"GitHub Actions 的 OIDC 身份还不是这个包的 trusted publisher"是未经检验的推断：真正被违反的前置条件是 CI 用的是 Node 22 自带的 npm 10.9.9，低于 trusted publishing 要求的 CLI ≥ 11.5.1。原文保留，因为它记录了"provenance 签成功"这行日志是如何把两次判断都带偏的。
+
 ### 2. 修复 12 条被写坏的会话：`.probe/repair-bricked-sessions.mjs`
 
 补的最小字段是那条 `user/message` payload 的 `id`（新 UUID）与 `role: "user"`，键序排成 `content, source, role, id`，与健康会话逐字段一致。`source.kind` 保持 `system` 不动：校验器只要求它是非空字符串，而那正是模型当时看到的文本，改它就是**改写历史而不是修键**。
@@ -1505,6 +1507,57 @@ rejected-on-reload shape found in: 0 session(s)
 
 同一轮里在应用内浏览器打开 `session-e2a5e835`（D4 的编造拒绝实验，10月3日 23:29），它**完整渲染出了历史**，包括 Lead 逐字贴出的那段「已报告但未验证……不计入 quorum」。修复前在同一个 URL 上看到的是 `历史加载失败：stored session "session-e2a5e835-…" is corrupt: … session event at seq 26 lacks an identified message`，那条横幅现在没了。D16 用 headless 重开当判据，这一条是同一个修复在 **web 端的读取路径**上也成立：两个入口都过。
 
+## D18：0.3.2 的第二次失败，根因不在 npm 那侧（2026-10-08 15:20–15:35，0 token）
+
+trusted publisher 配好之后重跑同一个 job，失败得一模一样：`npm error 404 Not Found - PUT https://registry.npmjs.org/dsh-quorum`，provenance 又签了一次、又进了一次透明日志（logIndex 3143466583）。**两次同样的失败排除了偶发，也说明 D16 第 1 节那句"缺的是 npmjs.com 上那三项"是未经检验的推断**——它把一条能查的事实（CI 用的 npm 版本）跳过去了。
+
+### 1. 先看 CI 到底把什么身份递给了 npm
+
+加了一个一次性 workflow `.github/workflows/oidc-claims.yml`：用**registry 自己的 audience** 换一枚 OIDC 令牌，只解码 claims 打印（令牌本身不打印）。它不发布任何东西。run 37743244044 的输出：
+
+```
+aud                = "https://registry.npmjs.org/"
+repository         = "141w/dsh-quorum"
+repository_owner   = "141w"
+workflow_ref       = "141w/dsh-quorum/.github/workflows/oidc-claims.yml@refs/heads/main"
+```
+
+也就是说 npm 拿去和配置比对的三个字符串，正是 `141w` / `dsh-quorum` / `release.yml`（文件名从 `workflow_ref` 里取）。这三项本身没有可疑之处。
+
+### 2. 真正被违反的前置条件写在 npm 自己的文档里
+
+npm 文档原文：**Trusted publishing requires npm CLI version 11.5.1 or later and Node version 22.14.0 or higher.** 而发布 job 的日志：
+
+```
+publish  Run actions/setup-node@v5  Found in cache @ /opt/hostedtoolcache/node/22.23.3/x64
+publish  Run actions/setup-node@v5  npm: 10.9.9
+```
+
+`node-version: '22.x'` 自带的就是 npm 10.9.9。**10.x 仍然会签 provenance**（那一步是找 sigstore/Fulcio 做的，不经过 registry），但它**不会把 OIDC 令牌换成 registry 的发布凭据**，于是 `PUT` 是匿名发出的；npm 对"匿名 PUT 一个已存在的包"回的是 `404 Not found`，不是 401/403。
+
+误导就出在这行的顺序上：
+
+```
+npm notice publish Signed provenance statement with source and build information from GitHub Actions
+npm error 404 Not Found - PUT https://registry.npmjs.org/dsh-quorum - Not found
+```
+
+上一行看起来像"身份已经认了、只是没权限"，实际只证明令牌拿到了。D16 的结论按这条改写。
+
+### 3. 修法，以及为什么它必然要一个新版本号
+
+发布 job 现在显式装 **npm 12.2.0**（与维护员本机同一个版本）并断言 `npm --version` 真的是它，而不是信任 `install -g` 生效。但**重跑旧 run 救不回 0.3.2**：re-run 用的是 tag 上那份 `release.yml`，那份还是 npm 10；而 workflow 的 `Publish` 步骤写死 `if: github.event_name == 'release'`（`workflow_dispatch` 只 `--dry-run`），所以从 main 补发也不行。剩下唯一诚实的路径是新 tag 指向含修复的提交——`0.3.3`，代码与 `0.3.2` 完全相同（tag 之后 main 上只有文档提交）。不挪 `v0.3.2`：它是 D11「按 git ref 安装」那条证据的锚点。
+
+### 4. 顺带查到的两条 npm 侧约束，之前没人写进文档
+
+- **trusted publisher 连接的字段建好之后不可编辑**，填错只能删掉重建（重建等于重新起下面的倒计时）。
+- **新建的连接必须在 2 天内完成第一次成功发布**，否则过期、不可用也不可改，只能删了重建。所以"配置"和"发布"不能排到不同日子。
+- 管理入口的原文路径：`npmjs.com → Packages → <package> → Settings → Trusted publishing`。
+
+### 5. 0.3.3 的落地实测
+
+（发布后补：registry 版本列表、`latest` 指向、attestation 是否可验、以及一次真实的 `dsh plugin add -w dsh-quorum@0.3.3`。在那之前本节只到第 4 条为止成立。）
+
 ## 已知缺口
 
 1. **拒绝记录无法写进会话日志。** 不是「目前还没写」，而是机制不允许：插件自定义事件类型能写能落盘，但读回来时会被 `KNOWN_SESSION_EVENT_TYPES` 拒绝，且 live `Session.append()` 无法设置 `ignorable` 标记，代价是整个会话永久打不开（见上方纪律 D 实验）。审计要持久，必须换载体；`ctx.logger` 在本机构建里没有任何可见出口。
@@ -1524,4 +1577,4 @@ rejected-on-reload shape found in: 0 session(s)
 15. **门禁依赖 Lead 会话的投影驻留**：投影不在本进程时写被拒（刻意 fail-closed），所以「Lead 会话被回收再打开」会让已收敛的团队重新落回 scout。与第 12 条同源，彻底修法仍是把用量与收敛做成投影折叠单元。
 16. **形状门禁的拒绝文案在真机上会命中三种分支**（D15 的 stalled 分支是第一次），但**放行之后成本档接管**这条仍未同轮验证——D13/D15 都把预算抬开了。
 17. **`agent.inject()` 不是校验点**：上游在该边界不校验 `UserMessage`（缺 `id`、错 `role`、`source.kind` 不在 `MessageSourceMap` 里都能写下去），代价落在会话日志的读取端——会话永久打不开。本包已按契约交合法对象（D15），但**插件写坏用户会话这件事目前没有机制级防线**，这是上游 gap 的候选第五条。
-18. **0.3.2 还没在 npm 上**（D16 第 1 节）：CI 的 `PUT` 被拒，因为 Actions 身份还不是这个包的 trusted publisher；在那之前 `github:…#v0.3.2` 是唯一能拿到修复的路径。另：修复坏会话的工具是帧级手术，改完必须让**运行时自己重开一次**当判据——只跑日志校验器不够，我第一次就是靠单帧重写骗过了自己的扫描器。
+18. ~~**0.3.2 还没在 npm 上**（D16 第 1 节）~~ —— **归因错了，见 D18**：被拒的原因不是 trusted publisher 没配，而是 CI 用 Node 22 自带的 npm 10.9.9（trusted publishing 要求 ≥ 11.5.1），OIDC 令牌从未换成 registry 凭据。修复在 main 上，`0.3.2` 因为 re-run 只会用 tag 上那份 workflow 而永远发不出去，发止血版的是 `0.3.3`。另：修复坏会话的工具是帧级手术，改完必须让**运行时自己重开一次**当判据——只跑日志校验器不够，我第一次就是靠单帧重写骗过了自己的扫描器。
