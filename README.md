@@ -35,10 +35,10 @@ That first publish cannot be done by CI: npm attaches a trusted publisher to a p
 Pin it if you care about what actually runs — upstream's own guidance is to lock the revision, because a later push to the default branch would otherwise change the code that executes at install time:
 
 ```sh
-dsh plugin --profile <name> add -w 'github:141w/dsh-quorum#v0.3.0'
+dsh plugin --profile <name> add -w 'github:141w/dsh-quorum#v0.3.1'
 ```
 
-Measured for `v0.1.0` on 2026-10-04: resolves in 7.6s, records `github:141w/dsh-quorum#v0.1.0` in the profile, and `--dump-config` still shows the `# == dsh-quorum` layer. The same check for `v0.3.0` is recorded in `docs/verification.md` D11.
+Measured for `v0.1.0` on 2026-10-04: resolves in 7.6s, records `github:141w/dsh-quorum#v0.1.0` in the profile, and `--dump-config` still shows the `# == dsh-quorum` layer. The same check for `v0.3.0` is recorded in `docs/verification.md` D11; `v0.3.1` supersedes it before anything reached npm, because D12 found a defect in that release (see the changelog).
 
 Installing from a checkout works identically and is what the docs here were verified with:
 

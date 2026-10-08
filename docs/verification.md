@@ -1108,6 +1108,8 @@ quorum (dsh-quorum): pending (waiting for service: agentTeams)
 
 `v0.3.0` tag 已推送（`git ls-remote --tags` 显示 `refs/tags/v0.3.0^{}` 指向发布提交）；GitHub Release 刻意**没有**先建——release 一旦 published 就会触发 `npm publish --access public --provenance`，而那时包还不存在，只会留下一条红色的失败记录。顺序是：先手工首发布，再建 Release。
 
+本节的对象是 `v0.3.0`。它后来被 `0.3.1` 取代且**从未发布到 npm**：D12 真机轮次在那个 tag 之后发现了判定倒退的缺陷，把一个会把已收敛团队锁住的版本发到 registry 上没有意义，所以宁可让第一个 npm 版本就是 `0.3.1`。tag 保留，因为它记录的是"按 ref 安装"这条路确实被测过。
+
 一处顺序上的瑕疵，记在这里而不是藏起来：tag 打在 `0f2deb8`，而本节（D11）是在它之后的提交里写的。所以**从 `#v0.3.0` 这个 git ref 装出来的副本，README 会引用一节该 tag 里不存在的 D11**。首发布是从工作区 `npm publish`，发布物里两节都在，所以只有"按 git ref 装"这条路会看到悬空引用；下一次发版自然修掉，不为此挪 tag。
 
 ## D12：形状门禁真机第一轮（2026-10-08 12:54–12:59，Lead + 2 成员，实际 433,888 billed）

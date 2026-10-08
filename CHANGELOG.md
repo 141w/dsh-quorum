@@ -6,7 +6,13 @@ While `dsh` itself is `0.2.x` (alpha/rc), a `0.x` version here means: minor bump
 behaviour or the role-card semantics, patch bumps do not. The compatible `dsh` range is declared
 in `package.json` `peerDependencies` and enforced at install time.
 
-## Unreleased
+## 0.3.1 - 2026-10-08
+
+Supersedes `0.3.0` before anything reached npm: `v0.3.0` was tagged and installed from the
+ref to verify the pin (D11), but never published, because the shape-gate live round that
+followed it (D12) found a defect that made the gate's verdict regress mid-round. Publishing
+`0.3.0` would have shipped a version whose termination discipline could lock a team that had
+already earned the right to write. Read **0.3.0 → Breaking** together with the fix below.
 
 ### Fixed
 

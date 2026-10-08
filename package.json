@@ -1,6 +1,6 @@
 {
   "name": "dsh-quorum",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Mechanism-enforced discipline layer for DeepSeek Harness agent teams: role cards, quorum termination, evidence-gated reports and cost budgets.",
   "type": "module",
   "main": "index.js",
