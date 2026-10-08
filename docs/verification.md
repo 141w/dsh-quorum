@@ -1110,6 +1110,70 @@ quorum (dsh-quorum): pending (waiting for service: agentTeams)
 
 一处顺序上的瑕疵，记在这里而不是藏起来：tag 打在 `0f2deb8`，而本节（D11）是在它之后的提交里写的。所以**从 `#v0.3.0` 这个 git ref 装出来的副本，README 会引用一节该 tag 里不存在的 D11**。首发布是从工作区 `npm publish`，发布物里两节都在，所以只有"按 git ref 装"这条路会看到悬空引用；下一次发版自然修掉，不为此挪 tag。
 
+## D12：形状门禁真机第一轮（2026-10-08 12:54–12:59，Lead + 2 成员，实际 433,888 billed）
+
+入口换成了 `dsh --profile quorum-live … headless --json`，**不是浏览器**：headless 会把答案写 stdout、诊断写 stderr，会话照常落盘，所以一整轮真机验证可以零点击完成，转录还是原始事件流。`--patch .probe/shape-gate-live.yml` 把预算抬到 20,000,000，让 hard 档不在中途抢走"被拒"的解释权（成本档本身 D8 已真机测过）。
+
+### 1. 验到的四条
+
+`agent.ctx.effect()` 这条 D9 只能靠类型定义的路径，真机打出来了：
+
+```
+[quorum] policing "lead" (ship) team=session-b8c712d9-7507-4767-86a5-fd5f4c7300c4
+[quorum] policing "reviewer" (scout) team=session-b8c712d9-…
+[quorum] policing "fixer" (ship) team=session-b8c712d9-…
+```
+
+Lead 在第 68 步尝试写 `NOTES-LIVE.md`，第 69 步拿到机制级拒绝（转录原文，非模型转述）：
+
+```
+seq 69 ERROR write :: Error: role card "lead" may not write: this team is still in scout shape — 0/2 verified report(s).
+Outstanding: reviewer [running] not-reported; fixer [running] not-reported. Writes unlock when quorum_wait reports the quorum met,
+which means each required teammate has delivered a message to the Lead AND its own session log shows a successful non-protocol
+tool result before that report. This gate is not waivable.
+```
+
+`quorum_wait` 被模型真调了一次（seq 121），两个成员的判定原文，以及第二次尝试（seq 128）打出的 stalled 分支：
+
+```
+seq 122  OK  quorum_wait :: Quorum NOT met — 1/2 teammate reports backed by tool evidence (waited 1ms); 2 delivered in total.
+  - reviewer [inactive] reported-but-unverifiable — member session fe188e17-… is not loaded in this process, so its log cannot be read
+  - fixer [running] reported+verified — 1 successful tool result(s) before it reported; earliest: read at seq 24
+
+seq 128 ERROR write :: … every report that is missing is from a member that is not running
+  (reviewer [inactive] unverifiable; fixer [inactive] unverifiable). … quorum_wait needs 2 verified report(s) and has 0.
+```
+
+`NOTES-LIVE.md` 全程未被创建（`ls` 与 `glob NOTES*` 双向确认，工作区里只有旧的 `NOTES.md`）。门禁整轮守住。
+
+### 2. 这轮真正的产出是它暴露的缺陷：判定会在没有任何新事实的情况下倒退
+
+两个成员的日志都是**真干了活**的：reviewer `read` calc.py 两次、发汇报两次（`team-message-09f644eb…`、`team-message-dc105cad…`）；fixer `read` test_calc.py、发汇报一次（`team-message-0393f6f4…`）。但 seq 122 判 `1/2`，seq 128 判 `0/2`——**中间两份日志一行都没变**，只是 reviewer 和 fixer 先后 idle、会话从进程里被释放，于是刚被判过 `verified` 的 fixer 也退回了 `unverifiable`。
+
+根因是判定时点选错了：`resolveEvidence` 是**查询时**去 `ctx.sessions.get(memberId)` 现读日志。这在"成员还在跑"时没问题，但它让 durable 事实变成了易失查询，后果有三条，都不该存在：
+
+- 法定人数会**倒退**（1/2 → 0/2），而倒退的判据被用来决定能不能写盘；
+- 它惩罚的正是表现最好的成员——干完、汇报完、休息，然后 locks 全队；
+- `requires: all` 下这是**不可恢复的死锁**：会话不回来，`verified` 就永远拿不回来，而文案给出的两条出路（唤醒 / 按 report-only 收尾）里，唤醒那条实际上救不了已经 verified 过又 idle 的成员。
+
+修法方向定为**投递时判定**：成员会话还活着、日志真读过的那一刻，就把 `verified/unverified` 结论按 messageId 记住；之后会话被释放，复用那次真读过的结论，而不是退化成"读不到"。不放开任何口子——缓存里只会有"确实读到过日志"得到的判定，从没读到过的成员照旧 `unverifiable`；会话还活着时仍然现读，新鲜的读结果永远压过缓存。诚实边界：这张表是进程内的，重启后退回 `unverifiable`（与既有第 8 条同源）。
+
+### 3. 顺手测到的模型侧事实
+
+Lead 一开始并不知道 `quorum_wait` 是工具：seq 21 它跑了 `bash {"command":"command -v quorum_wait"}`（把它当 shell 命令查），之后连用三次 `wait_agent`（seq 84 / 94 / 104）才在 seq 121 调到 `quorum_wait`。D3b 加的那条 `agent.inject` 提醒最终起作用了，但**起作用之前模型先烧了三次错误尝试**——"工具装了但模型不知道它有"这件事的代价，这轮第一次被量化出来。
+
+### 4. 真实花费（预时报高了约 3–5 倍，如实记下）
+
+```
+Lead      session-b8c712d9-…   312,064 billed   21 calls
+reviewer  fe188e17-…            70,999 billed    4 calls
+fixer     04df9a02-…            50,825 billed    2 calls
+                                ───────────
+整轮                          433,888 billed
+```
+
+预时报的是 150–300K（按 D3b 一轮单人审查 × 人数外推），实际 433,888，两个成员都比单人便宜，因为任务被限定为"读一个文件 + 汇报"。**放行那一半仍未验到**：需要第二轮（单成员 + `requires: 1` + 收到汇报立刻 `quorum_wait`），或在投递时判定落地之后一起验。
+
 ## 已知缺口
 
 1. **拒绝记录无法写进会话日志。** 不是「目前还没写」，而是机制不允许：插件自定义事件类型能写能落盘，但读回来时会被 `KNOWN_SESSION_EVENT_TYPES` 拒绝，且 live `Session.append()` 无法设置 `ignorable` 标记，代价是整个会话永久打不开（见上方纪律 D 实验）。审计要持久，必须换载体；`ctx.logger` 在本机构建里没有任何可见出口。

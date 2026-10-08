@@ -1,0 +1,48 @@
+# Overlay for the shape-gate live run (docs/verification.md D12). Applied with
+# `dsh --profile <p> --patch .probe/shape-gate-live.yml …`, after the profile layer.
+#
+# The budget is raised to 20000000 billed tokens on purpose: a two-member round
+# would otherwise cross the hard tier, and the hard tier also refuses writes — which
+# would make "still in scout" and "out of budget" indistinguishable in the transcript.
+# Cost tiers themselves are already measured live (D8).
+- id: quorum
+  name: dsh-quorum
+  config:
+    roles:
+      lead:
+        shape: ship
+        writeScopes: []
+        maxMembers: 4
+      reviewer:
+        shape: scout
+        allow:
+          - read
+          - read_image
+          - grep
+          - glob
+          - list
+      fixer:
+        shape: ship
+        writeScopes:
+          - src/
+          - tests/
+    defaultRole:
+      shape: scout
+      allow:
+        - read
+        - read_image
+        - grep
+        - glob
+        - list
+    budget:
+      maxBilledTokens: 20000000
+      softTier: 0.7
+      hardTier: 0.9
+    quorum:
+      requires: all
+      timeoutMs: 300000
+      pollMs: 30000
+    transition:
+      gateWritesOnQuorum: true
+    debug:
+      logExemption: false
