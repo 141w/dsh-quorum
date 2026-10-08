@@ -15,11 +15,26 @@ import { memberLog, report } from './member-log.js'
 // Signatures mirrored from the installed runtime, not invented:
 //   tools.guard(fn)      dsh-tools/lib/types/index.d.ts:655   -> () => void
 //   tools.register(def)  dsh-tools/lib/types/index.d.ts:636   -> () => void
+//   tools.get(name)      dsh-tools/lib/types/index.d.ts:690   -> ToolDefinition | undefined
 //   systemPrompt.section dsh-system-prompt/lib/types/index.d.ts:239 -> () => void
 //   ctx.effect(fn,label) cordis/lib/types/fiber.d.ts:145-157  -> Disposable, idempotent,
 //                                                              body's return is the finalizer
 //   agent/disposed       dsh-agent/lib/types/runtime-types.d.ts:240 payload {agent}
 //   session/disposed     dsh-session/lib/types/index.d.ts:52    payload the session
+
+/**
+ * The names a real runtime resolves today, harvested from the installed bundles by
+ * grepping their tool-definition literals for `name:`. A card granting only names outside this
+ * set is the case the spawn-time check exists to catch, so the list is deliberately a
+ * fixture rather than something read out of `index.js` — otherwise the check could pass
+ * by construction.
+ */
+const DEFAULT_CALLABLE = new Set([
+  'read', 'read_image', 'write', 'edit', 'multiedit', 'grep', 'glob', 'list',
+  'bash', 'pwsh', 'str_replace_editor', 'run_code',
+  'send_message', 'present', 'list_agents', 'wait_agent', 'spawn_teammate',
+  'team_task_create', 'team_task_get', 'team_task_list', 'team_task_update',
+])
 
 /**
  * Register an effect body the way Cordis does: run it now, treat a returned
@@ -218,6 +233,14 @@ export function hostHarness() {
           const entry = { agent: self, tool }
           registrations.push(entry)
           return drop(registrations, entry)
+        },
+        /**
+         * `dsh-tools/lib/types/index.d.ts:690` — "look up a tool as one scope sees it".
+         * The plugin uses it only to ask whether a role card's grant list names anything
+         * callable, so the stub answers from a set the test controls.
+         */
+        get(name) {
+          return (opts.callable ?? DEFAULT_CALLABLE).has(name) ? { name } : undefined
         },
       },
       systemPrompt: {

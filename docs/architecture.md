@@ -30,7 +30,7 @@ agent/created
 1. **守卫只作用于注册时所在的那个 agent 作用域**，因此能按角色区分。
 2. **守卫是单调的**：没有任何守卫能把别的守卫判定的「拒绝」翻成「允许」，监听器排序也无法绕过。这是「机制级」区别于「约定级」的技术定义。
 3. **`restrict()` 不能作为强制手段**。实测：`restrict({deny:['write','edit']})` 被 API 接受，但守卫仍然观察到该成员成功发起了 `write` 调用。它只影响可见性/提示词组装，不阻断调用路径。
-4. **不要用 `tools.get(name)` 探测能力**。实测全局视图与 agent 视图对 `read/bash/edit/write` 全部返回 `undefined`，而守卫证明这些工具全都可调用。只有守卫里的 `exec.name` 是地面真相。
+4. **不要用 `tools.get(name)` 探测能力**。实测全局视图与 agent 视图对 `read/bash/edit/write` 全部返回 `undefined`，而守卫证明这些工具全都可调用。只有守卫里的 `exec.name` 是地面真相。**2026-10-08 在真进程里重测了一次**（一次性探针打进 `enforce()`，重启 web 服务、浏览器打开一条团队会话触发，0 token）：`agent.ctx.tools` 上确实挂着 `get`/`schemas`/`schemaOf`/`wireSchemas`/`sdkSchemas`/`view`/`layers` 等一长串方法，但 `get('read')`、`get('spawn_teammate')`、`get('read', sessionId)` 全为 `undefined`，`schemas()` 长度 **0**——而被守卫拦住的那个调用此刻正在执行。上游头文件自己解释了原因：预设把模型可见的工具搬到了 agent 平面，成了祖先 contribution，无 scope 的读法看到的"全局层"是空的（`index.d.ts:670-690`）。**结论：插件无法把工作区的工具目录当判据。** 因此 0.4.0 的 spawn 空交集校验带一个阳性对照——连 `spawn_teammate` 本身都查不出来的目录视为不可信，整条检查自我禁用，绝不允许退化成本机上的"任何团队都开不起来"。
 
 ## 作用范围：按「有没有 teammate」豁免，不是按「是不是 lead」
 
@@ -55,12 +55,22 @@ agent/created
 | `str_replace_editor` | 不能 | 只在 `create` / `str_replace` / `insert` 三个命令上是写；`view` 是读，不进 scope 检查 |
 | `multiedit` | 不能 | 当前运行时没有这个工具，防的是别的构建里有 |
 | `bash` / `pwsh` | **能** | 守卫看到的是命令字符串，不是目标路径。它就是挡不住 |
+| `run_code` | **能，而且更彻底** | 它不是"带路径的写"，是"跑一段程序"。运行时自己的说明写着 agent 用 `run_code` 写 TypeScript 程序，文档里还演示了在 `run_code` 内部调用声明的 `bash` binding；`ptc` 执行模式下它更是**唯一**的模型直调传输（`dsh-tools/lib/types/index.d.ts:694-703`） |
 | 插件自己的工具（`quorum_wait`） | 不适用 | 不是对工作区的动作，因此不受角色卡白名单管辖 |
 
-`bash`/`pwsh` 这一行是机制的**真实边界**，不是待办：
+### 效果边界：认名字的守卫怎么对待看不见路径的工具
+
+`bash`/`pwsh` 那一行过去只被当作 scope 检查的例外。0.3.3 之后看清了它其实是**三类锁同时漏**：形状门禁、scout 只读、成本档 report-only 全部挂在 `WRITE_TOOLS` 这个名字集合上，而 `run_code` 不在里面——于是团队锁在 scout 期间，Lead（卡的 `allow` 缺省，所以默认拒绝对它不生效）可以直接用 `run_code` 写盘，把"Lead 也一起挡"这句话变成假的。
+
+现在的规则把名字换成能力：`EFFECT_TOOLS`（当前只有 `run_code`）与写工具同样进入 `mayMutate`，因此同样受成本档、scout、形状门禁约束。而**守卫看不见程序内部**，所以 scope 这一环只能是"要么这张卡没承诺限制，要么这次调用被拒"：
+
+- `writeScopes: []`（不限路径，出厂 Lead 卡就是这个）→ 收敛之后允许。再往下拒就等于把一次性的序列变成永久禁令，D13 那类正常轮次会被自己打死；
+- `writeScopes: ['src/']`（`fixer` 卡）→ **拒**，并说明"这个工具能写到任何地方，守卫没有路径可判，所以不按它在 scope 内处理"。这是一条**会真的挡掉合法工作**的规则，选它是因为另一侧是静默放行。
+
+`bash`/`pwsh` 那一行是机制的**真实边界**，不是待办：
 
 - 对 `shape: ship` 的卡片，它是已知局限——这类角色本来就该能改东西，`writeScopes` 只防误操作；
-- 对 `shape: scout` 的卡片，它是**自相矛盾**：卡片的全部主张是"这个角色不能改工作区"。因此激活时直接拒绝"scout 卡带 shell"，而不是留一行文档指望读的人记得（`index.js` 的 `checkCard`）。
+- 对 `shape: scout` 的卡片，它是**自相矛盾**：卡片的全部主张是"这个角色不能改工作区"。因此激活时直接拒绝"scout 卡带 shell"，而不是留一行文档指望读的人记得（`index.js` 的 `checkCard`）。0.4.0 起这条检查认的是 `UNCONFINABLE_TOOLS = shell ∪ effect`，也就是 `allow: [read, run_code]` 的 scout 卡同样在激活期被拒——过去它只查 `bash`/`pwsh`，换个名字就穿过去了。
 
 ### 路径判定是解析后的包含关系，不是子串
 
@@ -69,7 +79,7 @@ agent/created
 仍然**不是安全边界**的残余部分：
 
 1. **符号链接**：判定发生在字符串层面，`src/link -> /etc` 之后的写入点落在 scope 之外，本判定看不见。要做成安全边界必须 `realpath` 后再比较，而那要碰文件系统、要处理不存在的路径。
-2. **`bash`/`pwsh`**（上表）。
+2. **`bash`/`pwsh`**（上表）：能写任何路径，且带非空 `writeScopes` 的 ship 卡**不会**被它拦住——守卫看不见命令里的目标。`run_code` 已被拒（见上一节），shell 没有，因为对 ship 角色拒掉 shell 会挡掉它正常工作的主流方式。这是有意留下的不对称，不是漏了。
 3. 它防的是模型的手滑与越界，不防蓄意规避。
 
 ### 角色卡不能撤销强制机制本身

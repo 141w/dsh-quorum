@@ -1587,6 +1587,56 @@ $ grep -c randomUUID <profile>/node_modules/dsh-quorum/index.js                 
 
 最后一条是专门对着这次修的东西去的：**落盘下来的那份代码里确实有 `randomUUID`**，也就是 0.1.0–0.3.1 那条会写坏会话的 nudge 在装出来的插件里已经不存在了。
 
+## D19：一次桌面审计指出的效果边界，以及形状门禁被 `run_code` 绕过（2026-10-08 16:4x–17:1x，0 token）
+
+### 0. 先说这批结论是怎么来的，因为它影响你怎么定价
+
+她贴来五条"测试发现的问题及建议"。查了产生它们的会话（`session-c4725386`，本机 16:01 之后最活跃的一条）：里面那些"拒绝消息"带着**没被替换的模板字面量**——
+
+```
+cost budget reached ${Math.round(ratio * 100)}% of ${config.budget.maxBilledTokens} billed tokens; …
+```
+
+而 `cost budget reached 612% of 60000 billed tokens` 这个数出自我们自己的 `docs/verification.md:873`（D8 那轮）。所以这不是新一轮真机，是**一个 agent 读我们的源码和文档做出来的桌面审计**；它报的 328% 在我们全部记录里不存在（我们有 381% 和 612%），按未核实处理。另外查了所有 profile 的 patch 层，**没有任何一处还留着 60,000 的预算覆盖**，所以第 5 条"本轮被预算锁死"是那个 agent 自己会话的状态，不是配置残留。
+
+来源打折，不代表内容打折——第 1、2 条是真的，而且第 2 条比写它的人说的更严重。
+
+### 1. 形状门禁可以被 `run_code` 绕过，绕的还是 Lead
+
+守卫里所有"写"的判定都挂在 `WRITE_TOOLS = {write, edit, multiedit, str_replace_editor}` 这个名字集合上：`isWrite` 不成立，就同时跳过成本档 hard tier、scout 只读、形状门禁、`writeScopes` 四道。而 `run_code` 不在这个集合里。
+
+运行时自己的材料说明这不是理论风险：`run_code` 的描述写着 agent 用它"写一段 TypeScript 程序"，文档里演示了在 `run_code` 内部调用声明的 `bash` binding，`dsh-tools/lib/types/index.d.ts:694-703` 更说明 **`ptc` 执行模式下 `run_code` 是唯一对模型直开的传输**。出厂 `lead` 卡没有 `allow` 列表，所以第 833 行那道默认拒绝对它不生效。合起来：**团队锁在 scout 期间，Lead 调 `run_code` 就能建文件**，README 里"every role — the Lead included — is refused file writes"这句话在这条路径上不成立。
+
+先写红测试钉住，再改。四个用例的失败输出就是洞的尺寸：
+
+```
+not ok 1 - EFFECT BOUNDARY: a locked team does not get run_code from the Lead      actual: 'undefined'
+not ok 2 - EFFECT BOUNDARY: a scout card granting run_code is refused at activation  Missing expected exception
+not ok 3 - ... a ship member cannot route around writeScopes through run_code       actual: 'undefined'
+not ok 4 - ... read-only work still runs, so the rule is not a blunt instrument     actual: 'undefined'
+```
+
+`undefined` 是"守卫没拒绝"。修法是把名字换成能力：`EFFECT_TOOLS` 与写工具同样进 `mayMutate`；scope 这一环因为看不见程序内部，只能定成"这张卡承诺过限制 → 拒；没承诺 → 收敛后放行"。最后一条用例（`allow: [read, run_code]` 的 scout 卡）顺带暴露校验器也只查 `bash`/`pwsh`，扩成 `UNCONFINABLE_TOOLS = shell ∪ effect`。现在 `test/effect-boundary.test.js` 11 条全绿，全套 101/101。
+
+### 2. 探针实测：插件读不到工具目录，所以 spawn 校验必须自带阳性对照
+
+第 1 条建议（spawn 时校验 `card.grant ∩ 可调用集`）方向对，但 `docs/architecture.md` 早就记着 `tools.get()` 不可信。为了不再凭印象决定，插一次性探针进 `enforce()`，重启 web 服务、浏览器打开一条团队会话触发，**0 token**：
+
+```
+methods = applyFinalContent,...,get,guard,...,resolveExecution,restrict,schemaOf,schemas,sdkSchemas,...,view,wireSchemas
+getRead = null   getSpawn = null   getReadScoped = null   schemasLen = 0
+```
+
+方法都在，答案全空——而被守卫拦住的那次调用此刻**正在执行**。上游头文件解释了原因：预设把模型可见的工具搬上 agent 平面后成了祖先 contribution，无 scope 的读法看到的"全局层"是空的。
+
+所以这条检查不能直接拒 spawn，否则在本机上等于禁掉所有团队。实现里加了**阳性对照**：连 `spawn_teammate` 自己都查不出来的目录视为不可信，整条检查自我禁用。两个用例分别钉住"目录可信时拦住死卡"和"目录失明时不表态"。**结果是这条在 dsh 0.2.0-rc.2 上永远不会触发**——这是诚实的半成品，不是完成品，登记成上游缺口。
+
+### 3. 有意没做的两件事
+
+- **不对 `ship` 卡拒 `bash`/`pwsh`。** 与 `run_code` 同类却放行了，因为 shell 是这类角色正常工作的主流方式，拒它造成的误伤大于收益。这个不对称写进 `architecture.md` 的残余清单，不写成"已修"。
+- **不去碰 `view`/`layers`/`wireSchemas` 这些私有成员**换一个大一点的目录读数。本包纪律是不 import 任何 `@deepseek-ai/*`、只用契约里的面，靠私有内部撑起来的检查比没有检查更坏。
+
+
 ## 已知缺口
 
 1. **拒绝记录无法写进会话日志。** 不是「目前还没写」，而是机制不允许：插件自定义事件类型能写能落盘，但读回来时会被 `KNOWN_SESSION_EVENT_TYPES` 拒绝，且 live `Session.append()` 无法设置 `ignorable` 标记，代价是整个会话永久打不开（见上方纪律 D 实验）。审计要持久，必须换载体；`ctx.logger` 在本机构建里没有任何可见出口。
@@ -1607,3 +1657,8 @@ $ grep -c randomUUID <profile>/node_modules/dsh-quorum/index.js                 
 16. **形状门禁的拒绝文案在真机上会命中三种分支**（D15 的 stalled 分支是第一次），但**放行之后成本档接管**这条仍未同轮验证——D13/D15 都把预算抬开了。
 17. **`agent.inject()` 不是校验点**：上游在该边界不校验 `UserMessage`（缺 `id`、错 `role`、`source.kind` 不在 `MessageSourceMap` 里都能写下去），代价落在会话日志的读取端——会话永久打不开。本包已按契约交合法对象（D15），但**插件写坏用户会话这件事目前没有机制级防线**，这是上游 gap 的候选第五条。
 18. ~~**0.3.2 还没在 npm 上**（D16 第 1 节）~~ —— **归因错了，见 D18**：被拒的原因不是 trusted publisher 没配，而是 CI 用 Node 22 自带的 npm 10.9.9（trusted publishing 要求 ≥ 11.5.1），OIDC 令牌从未换成 registry 凭据。修复在 main 上，`0.3.2` 因为 re-run 只会用 tag 上那份 workflow 而永远发不出去。**已闭合：`0.3.3` 于 2026-10-08 15:43 由 CI 发出，`latest` 指向它，带可查的 provenance attestation，并按 README 那条命令真装过一遍（D18 第 5 节）。** 另：修复坏会话的工具是帧级手术，改完必须让**运行时自己重开一次**当判据——只跑日志校验器不够，我第一次就是靠单帧重写骗过了自己的扫描器。
+
+19. **插件拿不到"这个运行时到底能调用哪些工具"。** `tools.get()` 与 `schemas()` 对确实在执行的工具全部回空（D19 第 2 节实测），因为预设把模型可见工具搬上 agent 平面后成了祖先 contribution，而无 scope 读法看到的是空的全局层。后果：0.4.0 的 spawn 空交集校验**在本机上永不触发**，它只是"等一个能读的目录"的形状。真正的修法在上游——给插件一个按作用域解析的工具清单，或者把 `exec.name` 之外的判定面标准化。
+20. **`run_code` 内部的效果不可见，只能整工具二选一。** 守卫拿到的是名字和参数串，无法判断那段程序是读还是写，所以规则只能是"不许写的角色不给任意效果的工具"。代价写在 `test/effect-boundary.test.js` 最后一条：锁定期连"跑一段代码算一下"都不行。要收窄必须把检查点下沉进解释器（每个 `run_code` 内的 sub-dispatch 带 `parent` token 回调守卫），那是上游能力，不是这里能补的。
+21. **`ship` 卡上的 `bash`/`pwsh` 仍能写出 `writeScopes`，而 `run_code` 已被拒——这个不对称是有意的**（D19 第 3 节）。理由与代价都记在 `architecture.md` 的残余清单第 2 条；如果哪天决定一并拒掉 shell，那是一条会挡正常工作的变更，得单独走 minor。
+22. **形状门禁与成本档在同一条时间线上的先后顺序仍未真机相遇**（原第 14/16 条的残留）：0.4.0 之后两者都会拒 `run_code`，但"收敛放行 → 同一轮里越过 hard tier → 再被成本档锁上"这条链仍只在单测里。

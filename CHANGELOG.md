@@ -6,6 +6,21 @@ While `dsh` itself is `0.2.x` (alpha/rc), a `0.x` version here means: minor bump
 behaviour or the role-card semantics, patch bumps do not. The compatible `dsh` range is declared
 in `package.json` `peerDependencies` and enforced at install time.
 
+## 0.4.0 - 2026-10-08
+
+A minor bump because **the discipline layer got a real hole and this closes it**: everything that binds a write — the cost tiers, the `scout` read-only rule, and the scout → ship shape gate — was keyed on a set of tool *names*, and `run_code` was not in it. The runtime's own description of `run_code` is that the agent writes a program with it, its documentation shows a declared `bash` binding being called from inside that program, and under the `ptc` execution mode it is the only model-direct transport at all. So while a team was locked in scout, the Lead could create files through a tool the guard does not treat as a write — and the Lead card carries no `allow` list, so the default-deny that protects the shipped scout cards did not apply to it either. "Every role — the Lead included — is refused file writes" was false on that path.
+
+Found by a desk audit of this repository rather than by a live round, which is worth saying out loud: the audit's own numbers were re-read from our docs, but the bypass it pointed at was real and is now pinned by tests.
+
+### Changed
+
+- **Effect tools are governed like writes.** `EFFECT_TOOLS` (currently `run_code`) now enters the same branch as `write`/`edit`/`multiedit`/`str_replace_editor` for the hard cost tier, the `scout` refusal and the shape gate. For the scope check the rule is confinement-or-refusal: a card with `writeScopes` is denied the tool outright, because the guard sees no path it could test; a card without them (`writeScopes: []`, the shipped Lead) may use it **once the quorum has converged**. Denying it there too would turn a sequence into a permanent ban and break the rounds D13 proves work.
+- **A `scout` card granting `run_code` is refused at activation**, not warned about. The check used to read `SHELL_TOOLS = {bash, pwsh}`; it now reads `UNCONFINABLE_TOOLS = shell ∪ effect`, so renaming the escape hatch no longer walks past the validator.
+
+### Added
+
+- **`spawn_teammate` refuses a card that can do nothing.** A grant list naming no callable tool produces a member that can never gather evidence, so with `requires: all` plus the shape gate the team is locked out of writing for the rest of the round and the only symptom is a per-call "is not granted the X tool" — the silent, session-permanent sibling of the D12 regression. The check carries a positive control: the tool executing the call is by definition callable, so a catalog blind to `spawn_teammate` disqualifies itself and the check stays silent. **On dsh 0.2.0-rc.2 it therefore never fires** — measured again today: `tools.get()` returns `undefined` and `schemas()` is empty even for tools that demonstrably execute, because presets moved them onto the agent plane. Recorded as an upstream gap rather than worked around with private members.
+
 ## 0.3.3 - 2026-10-08
 
 **The first release published by CI, and the first with signed provenance.** Its code is

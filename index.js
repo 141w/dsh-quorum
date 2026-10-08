@@ -14,8 +14,19 @@ export const inject = ['tools', 'agentTeams', 'systemPrompt', 'sessionProjection
 //   multiedit               not in this runtime; kept so a harness that ships it is still covered
 // `bash` and `pwsh` can also write, but they carry no file argument to check, so
 // they are governed by the role's `allow` list instead of by `writeScopes` — see
-// the note in docs/architecture.md.
+// the note in docs/architecture.md. That holds only for a card that *has* an allow
+// list; a card without one grants everything, which is why the two sets below exist.
 const WRITE_TOOLS = new Set(['write', 'edit', 'multiedit', 'str_replace_editor'])
+/**
+ * Tools that reach the filesystem without naming a path, so no scope check can follow
+ * the effect. `run_code` is the one this runtime ships: its own description says the
+ * agent "uses run_code to write a TypeScript program", and under the `ptc` execution
+ * mode it is the *only* model-direct transport — every bound tool is dispatched nested
+ * inside it (`dsh-tools/lib/types/index.d.ts:694-703`). A guard that matches tool names
+ * cannot see what such a program does, so the enforceable rule at this boundary is not
+ * "check the path" but "a role that may not write does not get an unconfiable tool".
+ */
+const EFFECT_TOOLS = new Set(['run_code'])
 const SPAWN_TOOL = 'spawn_teammate'
 // The plugin's own primitives. A role card governs what an agent may do to the
 // workspace; it must not be able to revoke the mechanism that enforces the card,
@@ -340,6 +351,13 @@ const TRANSITION_KEYS = new Set(['gateWritesOnQuorum'])
 // — the card's whole claim is that the role cannot modify the checkout — so it is
 // refused rather than warned about.
 const SHELL_TOOLS = new Set(['bash', 'pwsh'])
+/**
+ * Shell plus anything that reaches the filesystem without a checkable path. A `scout`
+ * card granting one of these is refused at activation: the card's claim is "this role
+ * cannot modify the checkout", and no argument inspection can keep that claim for a
+ * tool whose effect is a program.
+ */
+const UNCONFINABLE_TOOLS = new Set([...SHELL_TOOLS, ...EFFECT_TOOLS])
 
 /**
  * Refuse a row that cannot enforce anything, at activation rather than at use.
@@ -436,11 +454,12 @@ function checkCard(label, path, card, bad) {
     }
   }
   if (card.shape === 'scout') {
-    const shell = (card.allow ?? []).filter((name) => SHELL_TOOLS.has(name))
+    const shell = (card.allow ?? []).filter((name) => UNCONFINABLE_TOOLS.has(name))
     if (shell.length > 0) {
       bad(
         `${path} is shape=scout (read-only) but grants ${shell.join(', ')}: `
-        + 'a shell can write any path, so this card would claim a guarantee it cannot keep',
+        + 'a shell — or a program runner like `run_code` — can write any path, so this '
+        + 'card would claim a guarantee the guard cannot keep for it',
       )
     }
   }
@@ -792,10 +811,38 @@ export function apply(ctx, config) {
     // Default on, and read once: a discipline whose default is off is a feature flag.
     const gateWrites = config.transition?.gateWritesOnQuorum !== false
 
+    /**
+     * Is this tool name something the runtime can actually call?
+     *
+     * Read through the same `agent.ctx.tools` surface this registration already uses
+     * (`guard` and `register` live there; there is no plugin-level tools object).
+     *
+     * This is NOT trusted on its own — see `catalogTrustworthy` at the call site.
+     * `docs/architecture.md` measured `tools.get('read')` answering `undefined` on this
+     * runtime even though `read` demonstrably executes, because presets moved the
+     * model-facing tools onto the agent plane and a scope-less `get` reads the global
+     * view (`dsh-tools/lib/types/index.d.ts:670-690` says exactly this).
+     * @param name - a tool name as it appears in a role card's `allow` list.
+     */
+    const callable = (name) => {
+      try {
+        const tools = agent.ctx?.tools
+        return typeof tools?.get === 'function' ? Boolean(tools.get(name)) : false
+      } catch {
+        return false
+      }
+    }
+
     keep(agent.ctx.tools.guard((exec) => {
       const ratio = budgetRatio()
-      const isWrite = WRITE_TOOLS.has(exec.name)
       const args = parseArgs(exec.arguments)
+      const isWrite = WRITE_TOOLS.has(exec.name)
+      // `run_code` is not a write by name, but its effect is a program that may write
+      // anywhere, so every rule below that binds a write binds it too. What cannot be
+      // checked is *which* path — which is why the scope rule for such a tool is
+      // confinement-or-refusal rather than a path test that would always pass.
+      const isEffect = EFFECT_TOOLS.has(exec.name)
+      const mayMutate = isEffect || (isWrite && isMutation(exec.name, args))
 
       if (exec.name === SPAWN_TOOL && isLead) {
         if (ratio >= config.budget.softTier) {
@@ -805,9 +852,33 @@ export function apply(ctx, config) {
         if (members.length >= (card.maxMembers ?? Infinity)) {
           return deny(`role card caps this team at ${card.maxMembers} members; finish an existing task before claiming another`)
         }
+        // The card this member will get is resolved by the same rule `agent/created`
+        // uses, so the prediction is not a guess. A grant list naming nothing callable
+        // produces a member that can never do work, therefore never deliver evidence,
+        // therefore — with `requires: all` and the shape gate — a team locked out of
+        // writing for the rest of the round, with nothing louder than a per-call
+        // "is not granted the X tool". That is the silent, session-permanent version of
+        // the bug D12 caught, so it is refused here, where there is still someone to tell.
+        //
+        // But only when the catalog can be trusted to answer at all: the tool executing
+        // this very call is, by construction, callable. If the lookup cannot name IT, the
+        // lookup is blind and every card would read as dead — which would turn a
+        // diagnostic into a ban on starting teams. So the check disqualifies itself
+        // against its own positive control.
+        if (callable(SPAWN_TOOL)) {
+          const requested = typeof args?.name === 'string' ? args.name : ''
+          const incoming = config.roles?.[requested] ?? config.defaultRole
+          const granted = incoming?.allow ?? []
+          if (granted.length > 0 && !granted.some(callable)) {
+            return deny(`spawn_teammate(name="${requested}") would start a member that can do nothing: `
+              + `role card "${requested}" grants [${granted.join(', ')}] and none of those is a tool this runtime can call. `
+              + 'It could never gather evidence or report one, and a team holding a member that cannot report stays locked out of writing. '
+              + 'Fix the card, or drop its `allow` to grant the runtime default.')
+          }
+        }
       }
 
-      if (isWrite && ratio >= config.budget.hardTier) {
+      if (mayMutate && ratio >= config.budget.hardTier) {
         return deny(`cost budget reached ${Math.round(ratio * 100)}%; this team is in report-only mode, summarise what you know and name what remains unverified`)
       }
 
@@ -815,14 +886,17 @@ export function apply(ctx, config) {
         return deny(`role card "${roleKey}" is not granted the ${exec.name} tool`)
       }
 
-      if (isWrite && isMutation(exec.name, args)) {
+      if (mayMutate) {
         if (card.shape === 'scout') {
-          return deny(`role card "${roleKey}" has shape=scout, which is read-only by construction; report your finding as a message to the lead instead of editing files`)
+          return deny(isEffect
+            ? `role card "${roleKey}" has shape=scout, which is read-only by construction, and ${exec.name} runs a program that can write any path; report your finding as a message to the lead instead`
+            : `role card "${roleKey}" has shape=scout, which is read-only by construction; report your finding as a message to the lead instead of editing files`)
         }
         // The shape gate, and it binds the Lead too. Gating only the members would be
         // the same mistake as an unbound `writeScopes`: the Lead card ships with
         // `writeScopes: []` (unrestricted), so an ungated Lead is a door left open next
-        // to the door we just closed — it could simply write the file itself.
+        // to the door we just closed — it could simply write the file itself, or run a
+        // program that does.
         if (gateWrites) {
           const root = roots.get(teamId)
           if (!root) {
@@ -832,6 +906,14 @@ export function apply(ctx, config) {
           }
           const gate = quorumGate(root, teamId)
           if (!gate.open) return gateRefusal(roleKey, gate)
+        }
+        if (isEffect) {
+          // Confinement was promised by this card, and this tool cannot be confined.
+          if (card.writeScopes?.length) {
+            return deny(`role card "${roleKey}" is confined to [${card.writeScopes.join(', ')}], but ${exec.name} runs a program that can write anywhere; `
+              + 'the guard sees no path it could check, so the call is denied rather than treated as inside the scopes — use `write`/`edit` on a path instead')
+          }
+          return
         }
         const path = writeTarget(exec.name, args)
         // Fail closed on a write this file cannot locate. An unrecognized argument
