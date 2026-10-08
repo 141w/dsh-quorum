@@ -8,6 +8,12 @@ in `package.json` `peerDependencies` and enforced at install time.
 
 ## 0.3.2 - 2026-10-08
 
+**Publish status: tagged, not yet on npm.** The CI release ran and npm refused the
+`PUT` with `404` because the workflow's OIDC identity is not yet a trusted publisher on
+this package; configure those three fields on npmjs.com and re-run the job. Until then
+the fix installs from the tag (`github:141w/dsh-quorum#v0.3.2`). Raw log lines:
+`docs/verification.md` D16.
+
 Patch release, and the reason to upgrade rather than wait: **every team round on 0.1.0
 through 0.3.1 could permanently brick the conversation it policed.** The fix is one field
 per injected message; nothing else about behaviour changes. Measured blast radius on the

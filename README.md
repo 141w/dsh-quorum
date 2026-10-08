@@ -26,7 +26,11 @@ dsh plugin --profile <name> add -w @deepseek-ai/dsh-experimental-agent-team-prof
 dsh plugin --profile <name> add -w dsh-quorum@0.3.2
 ```
 
-**Install it by name.** The package is on the public registry (`0.3.1` on 2026-10-08, `0.3.2` the same day), so `add -w dsh-quorum@<version>` resolves and `latest` points at a real version.
+**Install it by name.** `dsh-quorum@0.3.1` is on the public registry, so `add -w dsh-quorum@<version>` resolves and `latest` points at a real version. **`0.3.2` is tagged and its CI publish is waiting on one npm setting** — the GitHub Actions identity has no trusted publisher on the package yet, so npm answers the `PUT` with `404` (`docs/verification.md` D16; the provenance statement itself was minted and logged). Until that is configured, install the fix from the tag:
+
+```sh
+dsh plugin --profile <name> add -w 'github:141w/dsh-quorum#v0.3.2'
+```
 
 > **Upgrade if you are on `0.1.0`–`0.3.1`.** The message this bundle injects to tell a Team Lead that `quorum_wait` exists was written without the `id` and `role` the session validator requires, so on the runs where that message became its own `user/message`, **the conversation could never be opened again.** 12 of the 53 stored sessions on the machine that develops this plugin carry the event, all 12 written by it. `0.3.2` fixes the payload; damaged sessions are not repaired by upgrading — see `docs/verification.md` D15. Note that dsh has no plugin marketplace regardless — the in-app form takes a package name, a GitHub repo or a local directory, and nothing searches npm for you. What makes a dsh plugin findable on npm is the keyword convention (`dsh`, `dsh-plugin`, `deepseek-harness`), which this package declares.
 
