@@ -1108,6 +1108,8 @@ quorum (dsh-quorum): pending (waiting for service: agentTeams)
 
 `v0.3.0` tag 已推送（`git ls-remote --tags` 显示 `refs/tags/v0.3.0^{}` 指向发布提交）；GitHub Release 刻意**没有**先建——release 一旦 published 就会触发 `npm publish --access public --provenance`，而那时包还不存在，只会留下一条红色的失败记录。顺序是：先手工首发布，再建 Release。
 
+一处顺序上的瑕疵，记在这里而不是藏起来：tag 打在 `0f2deb8`，而本节（D11）是在它之后的提交里写的。所以**从 `#v0.3.0` 这个 git ref 装出来的副本，README 会引用一节该 tag 里不存在的 D11**。首发布是从工作区 `npm publish`，发布物里两节都在，所以只有"按 git ref 装"这条路会看到悬空引用；下一次发版自然修掉，不为此挪 tag。
+
 ## 已知缺口
 
 1. **拒绝记录无法写进会话日志。** 不是「目前还没写」，而是机制不允许：插件自定义事件类型能写能落盘，但读回来时会被 `KNOWN_SESSION_EVENT_TYPES` 拒绝，且 live `Session.append()` 无法设置 `ignorable` 标记，代价是整个会话永久打不开（见上方纪律 D 实验）。审计要持久，必须换载体；`ctx.logger` 在本机构建里没有任何可见出口。
