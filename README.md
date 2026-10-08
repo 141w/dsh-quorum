@@ -72,7 +72,7 @@ A `github:` install runs no build step, so pnpm never asks you to authorise one:
 | Discipline | Mechanism | Verification status |
 |---|---|---|
 | **Capability** — a role cannot do what it was not granted | Monotonic per-agent guard at the tool boundary; denials surface as `tool/result` with `isError: true` | ✅ live, three-path: scout denied writes, ship denied out-of-scope writes, lead allowed |
-| **Termination** — a discussion is over when submissions arrive | `quorum_wait`, a Lead-only tool that blocks on the durable mailbox (`team/message/queued` minus `delivered`) | ✅ live, both paths: `NOT met` with actionable guidance, and `met — 1/1` |
+| **Termination** — a discussion is over when submissions arrive, and nothing is edited before it is | `quorum_wait`, a Lead-only tool that blocks on the durable mailbox (`team/message/queued` minus `delivered`), plus the shape gate: writes stay refused for every role until that wait reports the quorum met | `quorum_wait` ✅ live, both paths: `NOT met` with actionable guidance, and `met — 1/1`. Shape gate: **12 unit cases, no live round yet** — it changes what a real team can do in its first steps, so it needs one before it can be claimed |
 | **Evidence** — a report counts only if it is anchored to a real tool run | Reads the member's own session log via `ctx.sessions.get()` | ✅ live: a teammate reported from pure common sense with **zero tool calls** in its log, and the gate refused to count it — verdict `0/1 … backed by tool evidence` |
 | **Cost** — a budget, and graceful degradation when it is hit | Token accounting from `assistant/message` usage events; tiers stop new members, then stop writes | ✅ **triggered live 2026-10-04** (budget lowered to 60,000 to force it): soft refused `spawn_teammate`, hard refused `write`, and the target file was never written. ⚠️ It is a **tool-surface budget, not a spend cap** — the guard runs per tool execution, so the same run billed **228,639 (381% of the budget)**: reasoning steps between tool calls cannot be interrupted. See [docs/verification.md](docs/verification.md) D8 |
 
@@ -97,6 +97,7 @@ roles:
 defaultRole: { shape: scout, allow: [read, read_image, grep, glob, list] }
 budget:      { maxBilledTokens: 2000000, softTier: 0.7, hardTier: 0.9 }
 quorum:      { requires: all, timeoutMs: 300000, pollMs: 30000 }
+transition:  { gateWritesOnQuorum: true }
 debug:       { logExemption: false }
 ```
 
@@ -105,6 +106,7 @@ debug:       { logExemption: false }
 - Unlisted teammates get `defaultRole`, which is `scout`: a role nobody declared is not implicitly trusted to modify the checkout.
 - A `scout` card may not be granted `bash` or `pwsh` — a shell can write any path, so such a card would claim a guarantee the mechanism cannot keep. It is refused at activation.
 - `pollMs` must stay ≥ 10000 — upstream's change-wait rejects shorter timeouts.
+- **`transition.gateWritesOnQuorum` is the scout → ship switch, and it defaults to on.** While it is on, *every* role — the Lead included — is refused file writes until `quorum_wait` reports the quorum met: each required teammate delivered a message to the Lead **and** its own session log shows a successful non-protocol tool result before that report. Gating only the members would be no gate: the `lead` card above carries `writeScopes: []`, so an ungated Lead could just write the file itself. There is deliberately no `waiver` key and no evidence knob — `config.transition.waiver` is refused at activation rather than ignored, because a gate the agent can waive mid-round is a prompt convention, not a mechanism. Set it to `false` only to run a comparison round, and say so in the report.
 - **Billed tokens are `input + output + cacheRead + cacheWrite`** — the runtime's own disjoint sum, which equals its `totalTokens`. Measured on 449 real calls; the cache terms are 96.9% of the total, so a budget set without them is off by orders of magnitude, not by a rounding error. See [docs/M1-usage-accounting.md](docs/M1-usage-accounting.md).
 - **The budget bounds the tool surface, not the bill.** It is checked when a tool executes, which is the only point this plugin can refuse anything. Reasoning between two tool calls still bills, so a team that has crossed a tier keeps spending while it wraps up — measured at 3.8x the nominal budget (228,639 against 60,000). Set `maxBilledTokens` against the work you want done, not as a hard spending ceiling.
 
@@ -118,6 +120,8 @@ Read these before trusting it. They are all measured, not hypothetical.
 - **`writeScopes` is now a resolved-path boundary, not a substring match** — traversal, prefix collisions and relative paths are all handled. It is still **not a security boundary**: it cannot see through a symlink, and `bash`/`pwsh` on a `ship` card can write anywhere (a `scout` card may not have a shell at all). A real boundary needs `realpath` comparison and would have to give up the shell entirely.
 - **Overlapping `writeScopes` produce no warning.** Measured: `writeScopeWarnings` stayed `[]` throughout. What actually prevents lost work is a filesystem-level optimistic-concurrency guard (`FS_STALE_VERSION`), not the task board.
 - **Budget attribution starts at `agent/created`.** Usage a member produces before its session→team mapping exists is not counted.
+- **The shape gate has never run against a real model.** It is 12 unit cases (including the reachability case: a member that ran a tool and reported *does* unlock writes, which is the property a deadlock would hide behind) and a clean activation on the installed runtime. What it has not been tested against is a Lead that objects: with `quorum.requires: all`, one member that fails to report keeps the whole team in scout until it is woken or the round is concluded report-only. That is the configured meaning of `all`, but only a live round shows whether the refusal text is actionable enough for a model to act on rather than route around.
+- **The gate reads the Team record from the Lead's session.** If that projection is not loaded in this process, writes stay refused and the denial says so — fail-closed by choice, which means a team whose Lead session was released mid-round cannot write even if it had converged.
 - **A denied action is only visible if the model attempts it.** A Lead that never asks a scout to write produces no denial record at all.
 - **Upstream is alpha.** `dsh` 0.2.x states plainly that breaking changes are coming. This bundle binds only documented seams and generated API surfaces.
 

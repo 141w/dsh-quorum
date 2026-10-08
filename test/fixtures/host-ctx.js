@@ -1,3 +1,5 @@
+import { memberLog, report } from './member-log.js'
+
 // A stand-in for the host contexts that `apply()` uses, built to the semantics the
 // installed runtime actually has — including the one thing that makes teardown
 // testable: every registration returns its disposer.
@@ -92,6 +94,44 @@ export function hostHarness() {
   // exactly as fiber.d.ts:38 documents.
   const plugin = makeEffect(disposed, 'ctx')
 
+  // The Team record the Lead's session projects: the mailbox the quorum and the shape
+  // gate both read. It must be replaced by a NEW object whenever it changes, never
+  // mutated in place — `stateOf` hands back a fresh reference exactly when an event was
+  // folded (dsh-session-projection: `apply` returns the same reference for events it
+  // ignores), and the gate memoises on that reference. An in-place mutation here would
+  // let the gate serve a stale verdict forever, and the cases that depend on it would
+  // pass for the wrong reason.
+  let teamRecord = { messages: [], delivered: [] }
+
+  /** Every member-session read the evidence gate performs, in order. */
+  const evidenceReads = []
+
+  const rowsOf = (teamId) => (roster.get(teamId) ?? []).map((m) => ({
+    id: m.agent.id,
+    name: m.name,
+    role: 'teammate',
+    status: m.status,
+    diagnostics: [],
+  }))
+
+  /** Every rostered teammate has delivered, with a real tool result behind it. */
+  const converge = (teamId = 'lead-1') => {
+    const messages = rowsOf(teamId).map((row) => ({
+      id: `msg-${row.name}`,
+      senderId: row.id,
+      senderName: row.name,
+      targetId: teamId,
+      content: [],
+    }))
+    teamRecord = { messages, delivered: messages.map((m) => m.id) }
+  }
+
+  /** Nobody has delivered: the team is still in scout, so writes are held. */
+  const lock = () => { teamRecord = { messages: [], delivered: [] } }
+
+  /** The Lead session's projection is not in this process at all. */
+  const unloadProjection = () => { teamRecord = undefined }
+
   const ctx = {
     logger: { info() {}, warn() {} },
     on(type, fn) {
@@ -99,10 +139,33 @@ export function hostHarness() {
       listeners.get(type).push(fn)
     },
     effect: plugin.effect,
+    sessionProjections: {
+      stateOf: (_session, key) => (key === 'agentTeam' ? teamRecord : undefined),
+    },
+    // A member session whose own log shows exactly what the evidence gate asks for:
+    // one successful non-protocol tool result, then the `send_message` result carrying
+    // the id the Lead's mailbox lists as delivered. Shapes come from
+    // fixtures/member-log.js, which is decoded from a real session log.
+    sessions: {
+      get(id) {
+        evidenceReads.push(id)
+        for (const rows of roster.values()) {
+          const hit = rows.find((m) => m.agent.id === id)
+          if (!hit) continue
+          const events = hit.evidenced === false
+            ? []
+            : memberLog([{ name: 'read', text: 'def add(a, b):\n    return a + b' }, report(`msg-${hit.name}`)])
+          return { id, ownEvents: () => events }
+        }
+        return undefined
+      },
+    },
     agentTeams: {
       // Mirrors dsh-experimental-agent-team/lib/index.js:397-427 and 436-466: any
       // agent without a live roster entry resolves to {root: self, role: 'lead'},
-      // and `listMembers` always prepends the Lead pseudo-row.
+      // and `listMembers` always prepends the Lead pseudo-row. The rows carry
+      // `{id, name, role, status, diagnostics}` because `TeamMemberView` does
+      // (lib/types/types.d.ts:42-52) — the quorum judge reads `role` and `status`.
       tryMembership(agent) {
         const member = (roster.get(agent.parentId) ?? []).find((m) => m.agent === agent)
         if (member) return { root: agent.parentAgent, id: agent.parentId, role: 'teammate', name: member.name }
@@ -111,7 +174,7 @@ export function hostHarness() {
       },
       listMembers(agent) {
         const teamId = agent.parentId ?? agent.id
-        return [{ name: 'lead' }, ...(roster.get(teamId) ?? []).map((m) => ({ name: m.name }))]
+        return [{ id: teamId, name: 'lead', role: 'lead', status: 'running', diagnostics: [] }, ...rowsOf(teamId)]
       },
       waitForChange: () => new Promise(() => {}),
     },
@@ -120,7 +183,7 @@ export function hostHarness() {
   /**
    * Make one agent, optionally as a teammate of `parentId`.
    * @param id - the agent id, which is also its session id (agent.d.ts:14).
-   * @param opts - `{parentId?, parentAgent?, name?, cwd?, noSession?}`.
+   * @param opts - `{parentId?, parentAgent?, name?, cwd?, noSession?, status?, evidenced?}`.
    */
   const create = (id, opts = {}) => {
     const agentScope = makeEffect(disposed, `agent(${id})`)
@@ -160,7 +223,12 @@ export function hostHarness() {
     }
     if (opts.parentId) {
       if (!roster.has(opts.parentId)) roster.set(opts.parentId, [])
-      roster.get(opts.parentId).push({ agent: self, name: opts.name })
+      roster.get(opts.parentId).push({
+        agent: self,
+        name: opts.name,
+        status: opts.status ?? 'running',
+        evidenced: opts.evidenced !== false,
+      })
     }
     return self
   }
@@ -190,5 +258,12 @@ export function hostHarness() {
     injections,
     roster,
     disposed,
+    /** Make every rostered teammate delivered-with-evidence: writes unlock. */
+    converge,
+    /** Put the mailbox back to empty: the team is in scout again. */
+    lock,
+    /** Make the Team record unreadable, the way a session this process never loaded is. */
+    unloadProjection,
+    evidenceReads,
   }
 }

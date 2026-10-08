@@ -327,6 +327,12 @@ function nap(ms, signal) {
 const intOr = (value, fallback) => (Number.isSafeInteger(Number(value)) ? Number(value) : fallback)
 
 const SHAPES = new Set(['scout', 'ship'])
+// The shape gate's whole configuration. Deliberately one key: `waiver` and an
+// evidence knob are not offered, because a gate the Lead can waive, or that a
+// report with nothing behind it can satisfy, is the prompt convention this bundle
+// exists to replace. An unknown key here is refused at activation rather than
+// ignored — silently ignoring `waiver: lead` would ship a fake control.
+const TRANSITION_KEYS = new Set(['gateWritesOnQuorum'])
 // A shell can write any path, so `writeScopes` cannot bound it: the guard sees a
 // command string, not a target. For a `ship` card that is a documented limit of
 // the mechanism (docs/architecture.md). For a `scout` card it is a contradiction
@@ -393,6 +399,23 @@ function validateConfig(config) {
     const value = quorum[key]
     if (value !== undefined && !(Number.isSafeInteger(Number(value)) && Number(value) >= 0)) {
       bad(`config.quorum.${key} must be a non-negative integer, got ${JSON.stringify(value)}`)
+    }
+  }
+
+  const transition = config.transition
+  if (transition !== undefined) {
+    if (transition === null || typeof transition !== 'object' || Array.isArray(transition)) {
+      bad('config.transition must be an object carrying gateWritesOnQuorum')
+    }
+    for (const key of Object.keys(transition)) {
+      if (!TRANSITION_KEYS.has(key)) {
+        bad(`config.transition.${key} is not a recognized key. The shape gate has no waiver and no evidence knob: `
+          + 'a waivable gate, or one satisfied by unverified reports, is a prompt convention rather than a mechanism. '
+          + `Recognized keys: ${[...TRANSITION_KEYS].join(', ')}.`)
+      }
+    }
+    if (transition.gateWritesOnQuorum !== undefined && typeof transition.gateWritesOnQuorum !== 'boolean') {
+      bad(`config.transition.gateWritesOnQuorum must be true or false, got ${JSON.stringify(transition.gateWritesOnQuorum)}`)
     }
   }
 }
@@ -522,6 +545,15 @@ export function apply(ctx, config) {
   // Without the drop below these two grew for the lifetime of the process.
   const spend = new Map()
   const sessionTeam = new Map()
+  // The Lead Agent per team, which is the only handle that can answer "has this team
+  // converged?" — the mailbox lives in the Lead's session log, and `listMembers` takes
+  // an Agent. Keyed by team id and dropped with the team's own session, like `spend`.
+  const roots = new Map()
+  // The shape gate runs on every write attempt, so its verdict is memoised against the
+  // projection's state reference: `apply()` returns the same reference for events it
+  // ignores, so a new reference is exactly "the team record changed". Roster and
+  // mailbox changes all arrive as events, so nothing else can move the verdict.
+  const gateMemo = new Map()
 
   // Everything this bundle registered on an agent's own context, keyed by the Agent
   // object and holding the plugin-side disposer. Two reasons it is a Map and not the
@@ -562,6 +594,83 @@ export function apply(ctx, config) {
       return { status: 'unverifiable', detail: 'its session exposed no event list' }
     }
     return judgeEvidence({ events, messageIds })
+  }
+
+  /**
+   * Has this team earned the right to modify anything? This is the second consumer of
+   * {@link judgeQuorum} — the same function, the same roster call, the same evidence
+   * resolver that `quorum_wait` uses — because two sources of truth for "is the
+   * discussion over" is how a discipline layer ends up arguing with itself.
+   *
+   * Fails closed and says why: an unreadable projection is not "converged". The
+   * opposite choice would leave the gate looking installed while being a no-op, which
+   * this project has now been burned by three times.
+   * @param agent - the Lead Agent whose session owns the Team record.
+   * @param teamId - the team, which is that Lead session's id branded.
+   * @returns `{ open }`, plus the numbers and names the denial reads out.
+   */
+  function quorumGate(agent, teamId) {
+    let state
+    try {
+      state = ctx.sessionProjections.stateOf(agent.session, 'agentTeam')
+    } catch (error) {
+      return { open: false, known: false, reason: `reading the Team record failed: ${error?.message ?? error}` }
+    }
+    if (!state || !Array.isArray(state.messages) || !Array.isArray(state.delivered)) {
+      return { open: false, known: false, reason: 'the Team record is not loaded in this process' }
+    }
+    let roster
+    try {
+      roster = ctx.agentTeams.listMembers(agent)
+    } catch (error) {
+      return { open: false, known: false, reason: `reading the roster failed: ${error?.message ?? error}` }
+    }
+
+    // The projection hands back the same reference for an event it did not fold, so
+    // reference equality is a sound "nothing happened since last time" test. Reading
+    // every member's session log on every write attempt would be the expensive part
+    // of this gate, and it is exactly the part that only needs to run when the record
+    // actually moved.
+    const memo = gateMemo.get(teamId)
+    if (memo?.state === state) return memo.gate
+    const verdict = judgeQuorum({
+      roster,
+      messages: state.messages,
+      delivered: state.delivered,
+      leadId: teamId,
+      requires: config.quorum?.requires,
+      evidence: resolveEvidence,
+    })
+    const gate = {
+      open: verdict.quorumMet,
+      known: true,
+      verifiedCount: verdict.verifiedCount,
+      required: verdict.required,
+      // Names, not counts: the Lead has to act on specific members, and `requires: all`
+      // with one dead member is a state it must be able to see rather than infer.
+      outstanding: verdict.members.filter((m) => m.evidence !== 'verified').map((m) => `${m.name} [${m.status}] ${m.evidence}`),
+      stalled: verdict.stalled ? verdict.stalled.reason : undefined,
+    }
+    gateMemo.set(teamId, { state, gate })
+    return gate
+  }
+
+  /** The one sentence per shape, so the denial reads the same whichever agent walks into it. */
+  function gateRefusal(roleKey, gate) {
+    if (!gate.known) {
+      return deny(`role card "${roleKey}" may not write: this team's shape cannot be evaluated, because ${gate.reason}. `
+        + 'Held locked rather than allowed through unmeasured — wake the Team Lead session, or call quorum_wait to see who is outstanding')
+    }
+    if (gate.stalled) {
+      return deny(`role card "${roleKey}" may not write: this team is still in scout shape, and every report that is missing is from a member that is not running `
+        + `(${gate.outstanding.join('; ')}). Wake one with send_message and require its tool output, or conclude this round as report-only — `
+        + `quorum_wait needs ${gate.required} verified report(s) and has ${gate.verifiedCount}. There is no waiver for this gate; `
+        + 'lowering config.quorum.requires is a decision you make in config, not one an agent makes mid-round')
+    }
+    return deny(`role card "${roleKey}" may not write: this team is still in scout shape — ${gate.verifiedCount}/${gate.required} `
+      + `verified report(s). Outstanding: ${gate.outstanding.join('; ') || 'none named'}. Writes unlock when quorum_wait reports the `
+      + 'quorum met, which means each required teammate has delivered a message to the Lead AND its own session log shows a successful '
+      + 'non-protocol tool result before that report. This gate is not waivable.')
   }
 
   /**
@@ -627,6 +736,8 @@ export function apply(ctx, config) {
     const keep = (dispose) => {
       if (typeof dispose === 'function') disposers.push(dispose)
     }
+    // Default on, and read once: a discipline whose default is off is a feature flag.
+    const gateWrites = config.transition?.gateWritesOnQuorum !== false
 
     keep(agent.ctx.tools.guard((exec) => {
       const ratio = budgetRatio()
@@ -654,6 +765,20 @@ export function apply(ctx, config) {
       if (isWrite && isMutation(exec.name, args)) {
         if (card.shape === 'scout') {
           return deny(`role card "${roleKey}" has shape=scout, which is read-only by construction; report your finding as a message to the lead instead of editing files`)
+        }
+        // The shape gate, and it binds the Lead too. Gating only the members would be
+        // the same mistake as an unbound `writeScopes`: the Lead card ships with
+        // `writeScopes: []` (unrestricted), so an ungated Lead is a door left open next
+        // to the door we just closed — it could simply write the file itself.
+        if (gateWrites) {
+          const root = roots.get(teamId)
+          if (!root) {
+            return deny(`role card "${roleKey}" may not write: team ${teamId} has no live Lead Agent in this plugin, so its `
+              + 'shape cannot be evaluated. Either the team ended or its Lead was never recorded; a team that is not running has '
+              + 'no shape to write in, and an unevaluated gate is held locked rather than let through')
+          }
+          const gate = quorumGate(root, teamId)
+          if (!gate.open) return gateRefusal(roleKey, gate)
         }
         const path = writeTarget(exec.name, args)
         // Fail closed on a write this file cannot locate. An unrecognized argument
@@ -701,6 +826,9 @@ export function apply(ctx, config) {
             ? 'Shape: scout — read-only by construction. Deliver findings as messages; do not edit files.'
             : `Shape: ship — may write${card.writeScopes?.length ? ` only under: ${card.writeScopes.join(', ')}` : ' anywhere in the workspace'}.`,
           card.allow?.length ? `Granted tools: ${card.allow.join(', ')}. Other tools are denied.` : null,
+          gateWrites
+            ? 'Shape: your team starts in scout. Writing is refused for every role here, Lead included, until quorum_wait reports the quorum met — each required teammate delivered AND backed by a real tool result. This is not waivable from inside the round; wake a silent member with send_message, or conclude report-only.'
+            : null,
           'A report counts only when backed by evidence: at least one successful tool result that is not send_message or another team-protocol tool must precede it, or the Lead\'s quorum_wait marks your conclusion unverified.',
           'These limits are enforced by a monotonic guard at the tool boundary. Retrying or routing around it will not change the outcome.',
         ].filter(Boolean).join('\n'),
@@ -777,6 +905,10 @@ export function apply(ctx, config) {
       // a throw here is the D2 failure: the session stops being creatable at all.
       police(team.root, 'lead', teamId)
     }
+    // The shape gate reads the Team record from the Lead's session, and the roster from
+    // the Lead Agent — so this strong reference has to live somewhere, and it lives in
+    // exactly one place, dropped with the team's own session below.
+    roots.set(teamId, team.role === 'lead' ? agent : team.root)
     police(agent, team.role === 'lead' ? 'lead' : team.name, teamId)
   })
 
@@ -801,7 +933,14 @@ export function apply(ctx, config) {
     // the budget it burned is exactly what the surviving members are measured
     // against, and dropping it here would hand a team a fresh allowance for
     // restarting its slowest member.
-    if (teamId === sessionId) spend.delete(sessionId)
+    if (teamId === sessionId) {
+      spend.delete(sessionId)
+      // Both of these key on the team, so both end with it. `roots` holds a live Agent
+      // object, which is the one reference in this file worth dropping eagerly: a stale
+      // entry here would also make the gate answer from a dead Lead's projection.
+      roots.delete(sessionId)
+      gateMemo.delete(sessionId)
+    }
   })
 
   ctx.on('session/event', (session, event) => {
@@ -831,5 +970,7 @@ export function apply(ctx, config) {
     attached.clear()
     spend.clear()
     sessionTeam.clear()
+    roots.clear()
+    gateMemo.clear()
   }, 'quorum: plugin state')
 }

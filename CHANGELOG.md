@@ -8,6 +8,41 @@ in `package.json` `peerDependencies` and enforced at install time.
 
 ## Unreleased
 
+### Breaking
+
+- **A team now starts in scout, and nothing writes until the quorum converges.** With
+  `transition.gateWritesOnQuorum: true` — the default, and the default *is* the change —
+  every role's file writes are refused until `quorum_wait` reports the quorum met: each
+  required teammate delivered a message to the Lead **and** its own session log shows a
+  successful non-protocol tool result before that report. Before this release `shape` was
+  only a card property, so a `ship` member could modify the checkout on step one with
+  zero reports in, which is the exact failure the scout/ship split exists to prevent.
+  **The Lead is gated too**, and that is not incidental: the shipped `lead` card carries
+  `writeScopes: []` (unrestricted), so an ungated Lead is a door left open beside the door
+  being closed — members would route every write through the Lead and the discipline would
+  be decoration.
+  Consequences to read before upgrading a workspace:
+  - With `quorum.requires: all` (the shipped default), one member that never reports keeps
+    the whole team in scout. The denial names both exits — wake it with `send_message`, or
+    conclude the round report-only — and the only lever is `config.quorum.requires`.
+  - **There is no `waiver`, and no evidence knob.** `transition.waiver` is refused at
+    activation rather than ignored: a gate an agent can talk around mid-round is a prompt
+    convention, which is what this layer replaces. To run a comparison round, set
+    `transition.gateWritesOnQuorum: false` in config, outside the round.
+  - The gate reads the Team record from the Lead's session. If that projection is not
+    loaded in this process, writes stay refused and say why — fail-closed by choice, which
+    means a team whose Lead session was released mid-round cannot write even if it had
+    converged.
+  - `read`, `send_message`, `present`, `quorum_wait` and `spawn_teammate` are unaffected
+    while locked: the gate bounds modifying the workspace, not gathering evidence. Solo
+    sessions stay untouched exactly as before (the team-of-one exemption).
+  - 12 unit cases in `test/shape-gate.test.js`, including the reachability property
+    (evidence-backed reports *do* unlock writes — B1's deadlock was a gate that made its
+    own condition unreachable while 12 tests stayed green) and the "still readable, still
+    reportable" case. 9 of the 12 run red against `HEAD`. **No live model round yet**: this
+    changes what a real team can do in its first steps, so it needs one before the
+    behaviour, not just the mechanism, can be claimed. See `docs/verification.md` D10.
+
 ### Changed
 
 - **The panel is titled 「智能体」/ "Agents", and its number now includes the Lead.** The
@@ -137,6 +172,21 @@ in `package.json` `peerDependencies` and enforced at install time.
   by package name) are accepted instead of pinning a client version.
 
 ### Added (tests)
+
+- `test/shape-gate.test.js`: 12 cases for the scout → ship switch — the Lead refused
+  before convergence, ship members refused while scouts keep their own reason, evidence-
+  backed reports unlock both (reachability), an unevidenced report does not and names the
+  member, the verdict re-computes only when the Team record moves, reads and reporting and
+  `quorum_wait` and `spawn_teammate` stay open while locked, a stalled team is given both
+  exits and the config lever, an unreadable record holds the lock, `gateWritesOnQuorum:
+  false` is the only bypass, `transition.waiver` throws at activation, and the declared
+  prompt section states the switch.
+- `test/fixtures/host-ctx.js` gained the Team record the quorum and the gate read:
+  `converge()` / `lock()` / `unloadProjection()`, roster rows carrying the real
+  `TeamMemberView` fields (`id, name, role, status, diagnostics`), member sessions whose
+  own logs are built from `fixtures/member-log.js`, and `evidenceReads` so memoisation is
+  assertable. The record is replaced by a new object on every change, never mutated in
+  place, because the gate's cache key is exactly the reference the projection hands back.
 
 - `test/lifecycle.test.js`: 8 cases for the two-owner teardown contract — the agent's own
   scope unarms guard + tool + prompt section, `agent/disposed` runs the plugin-side

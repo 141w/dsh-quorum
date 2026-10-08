@@ -53,6 +53,21 @@
           # upstream's change-wait rejects anything shorter.
           timeoutMs: 300000
           pollMs: 30000
+        transition:
+          # The scout -> ship switch. While this is true — the default — EVERY role in
+          # the team, the Lead included, is refused file writes until `quorum_wait`
+          # reports the quorum met: each required teammate has delivered a message to the
+          # Lead AND its own session log shows a successful non-protocol tool result
+          # before that report. Gating only the members would be no gate at all, since
+          # the `lead` card above carries `writeScopes: []` (unrestricted) and could
+          # simply write the file itself.
+          #
+          # There is deliberately no `waiver` key and no evidence knob here: a gate the
+          # Lead can waive mid-round, or that an unevidenced report can satisfy, is the
+          # prompt convention this bundle replaces. An unknown key under `transition`
+          # is refused at activation rather than ignored. Set this to false only to run
+          # a comparison round, and say so in the report.
+          gateWritesOnQuorum: true
         debug:
           # One line per exempt session at boot. It is the only way to tell
           # "plain session skipped on purpose" from "the hook never ran", but it

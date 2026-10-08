@@ -94,6 +94,10 @@ test('exempting plain sessions did not weaken enforcement: scout denied, lead fr
   const lead = h.create('lead-1')
   const reviewer = h.create('child-1', { parentId: 'lead-1', parentAgent: lead, name: 'reviewer' })
   h.emit('agent/created', { agent: reviewer })
+  // Writes are unlocked here on purpose: these cases are about which tool may write
+  // where, and the shape gate would otherwise answer first. The gate itself is owned
+  // by test/shape-gate.test.js; `lock()` puts it back.
+  h.converge()
 
   const scout = h.guards.find((g) => g.agent === reviewer).fn
   const leadGuard = h.guards.find((g) => g.agent === lead).fn
@@ -151,6 +155,10 @@ test('cost tiers degrade in order: stop growing, then stop writing', () => {
   h.create('child-1', { parentId: 'lead-1', parentAgent: lead, name: 'reviewer' })
   h.emit('agent/created', { agent: lead })
   h.emit('agent/created', { agent: h.roster.get('lead-1')[0].agent })
+  // Writes are unlocked here on purpose: these cases are about which tool may write
+  // where, and the shape gate would otherwise answer first. The gate itself is owned
+  // by test/shape-gate.test.js; `lock()` puts it back.
+  h.converge()
   const leadGuard = h.guards.find((g) => g.agent === lead).fn
 
   // maxBilledTokens 400000: soft 70% = 280000, hard 90% = 360000.

@@ -109,6 +109,7 @@ test('a disposed guard stops denying: the mechanism is really uninstalled, not h
 
 test('a member session leaving keeps the team ledger; the Lead leaving drops it', () => {
   const { h, lead, member } = team()
+  h.converge()
   const write = () => guardOf(h, lead)({ name: 'write', arguments: '{"file_path":"/work/a.py"}' })
   assert.equal(write(), undefined, 'free to write at first')
 
@@ -124,10 +125,25 @@ test('a member session leaving keeps the team ledger; the Lead leaving drops it'
   assert.match(write(), /reached 100%/, 'a disposed session must stop accruing, not double-count')
 
   // The Lead's own session leaving IS the team ending (`TeamId` is that session id
-  // branded), so the ledger goes with it. Documented in docs/architecture.md: a
-  // reopened team starts from zero, the same scope limit a process restart already had.
+  // branded), so the ledger goes with it — and so does the shape gate's ability to
+  // evaluate anything. The surviving agent must be refused, not waved through: a dead
+  // team writing to disk is not a discipline, and "allowed because we can no longer
+  // tell" is the no-op-shaped failure this file keeps having to name.
   h.emit('session/disposed', lead.session)
-  assert.equal(write(), undefined, 'the team ledger left with the team')
+  assert.match(write(), /no live Lead Agent/, 'the ended team stops writing')
+
+  // A reopened team (new Agent objects, same durable ids) starts from zero spend. This
+  // is the price of a bounded ledger, stated in docs/architecture.md: the accounting is
+  // scoped to process x session residency, exactly as evidence resolution already was.
+  const lead2 = h.create('lead-1')
+  h.emit('agent/created', { agent: lead2 })
+  const auditor = h.create('child-9', { parentId: 'lead-1', parentAgent: lead2, name: 'auditor' })
+  h.emit('agent/created', { agent: auditor })
+  h.converge('lead-1')
+  const write2 = () => guardOf(h, lead2)({ name: 'write', arguments: '{"file_path":"/work/a.py"}' })
+  assert.equal(write2(), undefined, 'a reopened team gets a fresh budget')
+  h.emit('session/event', lead2.session, usage(400000))
+  assert.match(write2(), /report-only mode/, 'and it can still cross its own tiers')
 })
 
 test('session routing is keyed by a real session id, never by undefined', () => {
@@ -143,6 +159,9 @@ test('session routing is keyed by a real session id, never by undefined', () => 
   assert.equal(h.guards.filter((g) => g.agent === ghost).length, 1, 'policed anyway')
 
   const leadGuard = () => guardOf(h, lead)({ name: 'write', arguments: '{"file_path":"/work/a.py"}' })
+  // The gate is open for this case: what is under test is session routing,
+  // not which shape the team is in.
+  h.converge()
   h.emit('session/event', { id: undefined }, usage(400000))
   assert.equal(leadGuard(), undefined, 'a keyless session may not spend the team’s budget')
 

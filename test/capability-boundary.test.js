@@ -36,6 +36,10 @@ function guarded(name, roleOverrides = {}, session = {}) {
   const lead = h.create('lead-1')
   const member = h.create('child-1', { parentId: 'lead-1', parentAgent: lead, name, ...session })
   h.emit('agent/created', { agent: member })
+  // Writes are unlocked here on purpose: these cases are about which tool may write
+  // where, and the shape gate would otherwise answer first. The gate itself is owned
+  // by test/shape-gate.test.js; `lock()` puts it back.
+  h.converge()
   return { h, member, guard: h.guards.find((g) => g.agent === member).fn }
 }
 
@@ -157,6 +161,10 @@ test('COST: billed tokens include the disjoint cache terms', () => {
   h.create('child-1', { parentId: 'lead-1', parentAgent: lead, name: 'reviewer' })
   h.emit('agent/created', { agent: lead })
   h.emit('agent/created', { agent: h.roster.get('lead-1')[0].agent })
+  // Writes are unlocked here on purpose: these cases are about which tool may write
+  // where, and the shape gate would otherwise answer first. The gate itself is owned
+  // by test/shape-gate.test.js; `lock()` puts it back.
+  h.converge()
   const leadGuard = h.guards.find((g) => g.agent === lead).fn
 
   // 2,000,000 max: soft 1,400,000 / hard 1,800,000. This call bills 1,500,000
@@ -178,6 +186,10 @@ test('COST: an assist with no usage object bills nothing and is not an error', (
   h.create('child-1', { parentId: 'lead-1', parentAgent: lead, name: 'reviewer' })
   h.emit('agent/created', { agent: lead })
   h.emit('agent/created', { agent: h.roster.get('lead-1')[0].agent })
+  // Writes are unlocked here on purpose: these cases are about which tool may write
+  // where, and the shape gate would otherwise answer first. The gate itself is owned
+  // by test/shape-gate.test.js; `lock()` puts it back.
+  h.converge()
   const leadGuard = h.guards.find((g) => g.agent === lead).fn
 
   h.emit('session/event', lead.session, { type: 'assistant/message', data: { message: {} } })

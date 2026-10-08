@@ -210,6 +210,22 @@ B1 那轮的教训（`allow` 漏 `send_message` → 成员永远交不出、系�
 
 审计的自然做法是把判定结果写回会话日志，这条路被机制封死（见上一节与 `D2-finding.md`）：写自定义 `type` 会让该会话永久打不开。所以证据门禁**只消费已有事件**，`index.js` 里没有任何 `append(`，插件也不注册新的事件类型。判定结果只活在 `quorum_wait` 的返回值与 Lead 的那一轮上下文里——不落盘、不可追溯，这是当前明确的代价。
 
+## 形状切换门禁：scout → ship 是被机制判定的，不是被劝说的
+
+四条纪律里最后一格。此前 `shape` 只是**卡片属性**（scout 不能写、ship 能写），团队本身没有阶段概念：一个 `ship` 成员可以在零汇报的第一步就把文件改掉，而这正是 scout/ship 分形要挡的事。
+
+现在：**团队默认处于 scout，直到法定人数收敛；收敛之前，所有角色的写盘都被拒绝——包括 Lead。** 判据完全复用 `judgeQuorum`（和 `quorum_wait` 同一个函数、同一次 `listMembers`、同一个证据解析器），因为"讨论结束了没有"这件事有两个真相来源的话，治理层会跟自己吵架。
+
+三条设计决定，都不是审美：
+
+- **Lead 必须一起挡。** `lead` 卡是 `writeScopes: []`（不限路径）。只挡成员等于在旁边另开一扇门——Lead 自己把文件写了就行，门禁变成装饰。
+- **不给 waiver，不给证据开关。** `transition` 下只有 `gateWritesOnQuorum` 一个键，写 `waiver: lead` 会在**激活期**被拒（未知键报错而不是忽略），理由是这类"看起来能配置其实是假控件"的东西，比没有更坏：它会让用户以为自己有豁免能力。想关掉门禁只能显式写 `gateWritesOnQuorum: false`——那是**轮次之外**的配置决定，不是 agent 在任务里能谈判的东西。默认值是**开**，因为默认关的门禁等于功能开关，不是纪律。
+- **读不到就锁住。** Lead 会话的投影不在本进程时，写仍被拒并把原因说出来（fail-closed）。反面选择——"判不出来就当过了"——是这个仓库已经栽过三次的形状：宽松把歧义解释成通过。
+
+代价与可达性：`quorum.requires: all` 时，一个成员始终不汇报，整队就一直停在 scout。这是 `all` 的字面含义，不是缺陷，但退出路径必须在拒绝文案里（实测单测钉住：文案要同时给出「用 send_message 唤醒」和「本轮按 report-only 收尾」两条，并说明唯一的杠杆是配置）。同时保留一条可达性断言——**跑过工具再汇报的成员必须能解锁写**，因为 B1 那轮的死锁正是"门禁本身让法定人数不可达"，而 12 条测试全绿没发现。
+
+守卫的顺序也是有意的：预算 hard 档 → scout 结构拒绝 → 形状门禁 → 路径范围。成本拒绝先于形状（两种拒绝的处置不同），形状门禁先于路径（后者只在"能写"时才有意义）。`quorum_wait` / `send_message` / `read` 在门禁期间全部照旧可用——挡的是改动工作区，不是收集证据。
+
 ## 生命周期：注册有两个主人
 
 上游把卸载语义写成了一条硬要求（`dsh-agent-preset/skills/cordis-plugin-development/references/practices.md`）：
@@ -245,7 +261,7 @@ ctx.effect(() => () => { for (const d of attached.values()) d(); attached.clear(
 - **`bash`/`pwsh` 在 `ship` 卡上是绕过路径**：机制的真实边界，不是待办。`scout` 卡带 shell 已在激活期拒绝。
 - **预算账本的作用域是「进程 × 会话驻留期」**：`spend` 随 Lead 会话离开存储而清零（`session/disposed`），插件卸载也清零。所以**重开同一个团队会话等于重新发一份预算**。这不是新缺口——进程重启本来就是这个行为，D6 实测那轮 381% 超支正是同一进程内发生的；本次改动只是把它从"永远不清"换成"有明确清零点"。彻底修法是把用量做成 `ctx.sessionProjections` 的折叠单元（宿主侧 `register()` 对插件开放，被堵的只有客户端 `wire` 可见性，见 `D7-upstream-gaps.md` 第 1 条），那样账本随日志重放、随缓存 checkpoint、随会话生命周期自然结束；代价是要按契约交一个 zod 形状的 `stateSchema`，而本包坚持零 `@deepseek-ai/*` import，所以那是一次独立的决定，不是顺手改。
 - 预算按 teamId 聚合，依赖 `agent/created` 时建立的 session→team 映射；Lead 之外的成员若在其映射建立前就产生用量，会计入不到。teamId 取自 `TeamMembership.id`——**该类型没有 `teamId` 字段**，早先代码写的 `team.teamId ?? team.root` 实际拿到的是 Lead `Agent` 活对象（探针实测把它放进事件负载即抛 `non-JSON-serializable data`）。
-- 终止纪律：法定人数的**判定 + 等待 + 证据门禁**已实现（D3b、D4），**形状切换门禁未实现**。上游 `wait_agent` 唤不醒未运行的成员（实测 `noProgress` / `no-active-peer`），所以踢醒只能由 Lead 自己发 `send_message` 完成；实测 `send_message` 本来就能冷恢复成员，缺的从来不是踢醒机制。
+- 终止纪律：**判定 + 等待 + 证据门禁 + 形状切换门禁都已实现**（D3b、D4、D10）。形状切换门禁**没有真机轮次**，只有 12 条单测 + 激活通过；上游 `wait_agent` 唤不醒未运行的成员（实测 `noProgress` / `no-active-peer`），所以踢醒只能由 Lead 自己发 `send_message` 完成；实测 `send_message` 本来就能冷恢复成员，缺的从来不是踢醒机制。
 - 证据门禁的强度上限见上一节「局限」六条。其中「重启后成员会话不常驻」已在真机复现（`live=false`）：重启会把历史 `verified` 全部退化成 `unverifiable`，Lead 侧只有一行返回文本提醒。
 - **兼容性只在安装期拦得住**：本包用 `peerDependencies: {"@deepseek-ai/dsh": ">=0.2.0-rc.2 <0.3.0"}` 声明兼容范围，因为这是运行时**唯一**真正生效的闸门（`dsh-app-boot` 的 `evaluatePluginCompatibility` 只读 `peerDependencies`，`engines.dsh` 没有任何 reader）。代价是上游发布新的 rc 时用户会被拒绝安装并看到 `allow-version` 指令——这是刻意的：对 alpha 上游，响亮失败优于静默损坏。
 

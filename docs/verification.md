@@ -1001,11 +1001,64 @@ $ # 量 getBoundingClientRect：见上表
 
 测试侧跟着改了两条旧断言（它们钉的是旧设计，不是 bug）：`a teammate row carries a phase dot and the Lead row does not` → `every roster row carries a phase dot, the Lead included`；新增「viewed from inside a teammate, the current-session marker moves to that row」，这条正是旧写法的错位。**71/71 全绿。**
 
+## D10：形状切换门禁 —— scout → ship 由机制判定（2026-10-08，单测 + 激活，**无真机轮次**）
+
+### 改的是什么
+
+`shape` 此前只是卡片属性，团队没有阶段：`ship` 成员可以在零汇报的第一步写盘。现在团队默认处于 scout，`judgeQuorum` 判定收敛之前**所有角色（含 Lead）的写都被拒**。判据不另起炉灶，调的是 `quorum_wait` 用的同一个 `judgeQuorum` + 同一个 `listMembers` + 同一个证据解析器。
+
+### 1. 基线与测试先行
+
+改前基线：本轮开始时 `npm test` = **61/61**（D9 之后为 71/71）。
+
+```
+$ cp index.js .probe/index.gate.js && git show HEAD:index.js > index.js
+$ node --test test/shape-gate.test.js
+# tests 12
+# pass 3
+# fail 9
+$ cp .probe/index.gate.js index.js
+$ npm test
+# tests 83
+# pass 83
+# fail 0
+```
+
+12 条里 3 条对 HEAD 也过，都是**不该随门禁变化**的性质（配置校验的两种拒绝形态与 scout 的结构拒绝）；其余 9 条要求门禁存在。其中三条是这套设计真正的承重项：
+
+- `GATE: with no reports in, the Lead is refused — the bypass path is closed` —— Lead 卡不限路径，不挡 Lead 就等于装饰。
+- `GATE REACHABILITY: reports backed by tool evidence unlock the Lead and the fixer` —— 可达性必须是**被测的性质**。B1 那轮的死锁（scout 白名单漏 `send_message`）12 条全绿没抓到，这条就是那次教训的形状化。
+- `GATE: while locked, reading and reporting still work, so no team deadlocks` —— `read` / `send_message` / `quorum_wait` / `spawn_teammate` 在锁定期全部放行：挡的是改工作区，不是收集证据。
+
+### 2. 真机：只做到激活与配置进树，**没有跑模型**
+
+```
+$ pkill -f "dsh --profile quorum"; sleep 3
+$ cd ~ && nohup dsh --profile quorum --port 3097 --no-open > ~/.qoder-cn/tmp/dsh-gate.log 2>&1 &
+$ sleep 15; cat ~/.qoder-cn/tmp/dsh-gate.log
+dsh web: http://127.0.0.1:3097/?token=…
+$ grep -cE "did not activate|failed to import|pending|Error:|startup failed" ~/.qoder-cn/tmp/dsh-gate.log
+0
+$ dsh --profile quorum --dump-config | grep -A 3 "transition:"
+    transition:
+      gateWritesOnQuorum: true
+    debug:
+      logExemption: false
+```
+
+这两条合起来证明的是：新增的 YAML 块走进了生效树，且 `validateConfig` 接受它（配置行被拒会在激活期抛 `quorum:` 前缀错误并留下 `1 entry did not activate`）。**它不能证明模型会怎么反应**——尤其不能证明 `quorum.requires: all` 下 Lead 收到"你还在 scout"的拒绝后，是去唤醒成员、还是去绕路。那需要一轮真实团队，约 150–300K billed，发请求前要先报预估并等确认。
+
+### 3. 为什么 `requires: all` 会锁整队，以及为什么没给 waiver
+
+`all` 的字面含义就是一个成员不汇报就不算收敛，所以整队停在 scout。这是配置决定的严格程度，不是实现的意外。退出路径写在拒绝文案里（唤醒 / 按 report-only 收尾 / 改 `config.quorum.requires`），文案由 `GATE: a stalled team is told its real options` 钉住。
+
+不给 `waiver`：能在轮次中被 agent 说服的门禁就是提示词约定，正是这层要消灭的东西。写 `transition.waiver` 会在激活期被拒而不是被忽略——"能配但没用"比"不能配"更坏。真要关只在配置里显式写 `gateWritesOnQuorum: false`，并且 `GATE: an explicit false is honoured` 保证那是唯一通道。
+
 ## 已知缺口
 
 1. **拒绝记录无法写进会话日志。** 不是「目前还没写」，而是机制不允许：插件自定义事件类型能写能落盘，但读回来时会被 `KNOWN_SESSION_EVENT_TYPES` 拒绝，且 live `Session.append()` 无法设置 `ignorable` 标记，代价是整个会话永久打不开（见上方纪律 D 实验）。审计要持久，必须换载体；`ctx.logger` 在本机构建里没有任何可见出口。
 2. **`restrict()` 不足以作为强制手段**（见 `architecture.md`），但它作为「提示词层可见性收窄」的用途还没验证是否真的减少了模型误调用。
-3. **终止纪律：法定人数的判定、等待与证据门禁已实现（D3b + D4），形状切换门禁未实现。** 「踢醒循环」按实测排除——`send_message` 本来就能冷恢复唤醒未运行的成员（回执 `status:"accepted"`），缺的从来不是踢醒，是等待加判据。
+3. ~~**终止纪律：法定人数的判定、等待与证据门禁已实现（D3b + D4），形状切换门禁未实现。**~~ —— **2026-10-08 已实现，见 D10**：团队默认处于 scout，`judgeQuorum` 收敛之前所有角色（含 Lead）的写盘被拒；12 条单测含可达性与「锁定期仍能读、仍能汇报」两条，真机只做到激活与配置进树。 「踢醒循环」按实测排除——`send_message` 本来就能冷恢复唤醒未运行的成员（回执 `status:"accepted"`），缺的从来不是踢醒，是等待加判据。
 4. ~~**纪律 C 的超限实验仍未做**~~ —— **2026-10-04 已完成，见 D8**：预算压到 60,000 后一轮内越过 soft 与 hard，两档都在工具执行层留下 `isError` 拒绝，`NOTES.md` 未被写出。同一轮量出的新缺口见第 11 条。其余两档的相对强度（soft 的「只提示」具体改变了模型什么策略）仍未被单独观测。
 5. **D3a 的两步验收未跑**：全新空会话的「stdout 无 `[quorum] policing` 行」（需 UI 点一次，0 token）与「spawn 后 Lead 与成员各注册一次 + scout 仍被机制拦住写文件」（需 Lead 真派一个 reviewer，约 76K billed）。本轮 0 token。
 6. **`quorum_wait` 还没被模型真调过一次**，证据门禁同样只到「判定与读面对真实日志成立」这一层。已证的是：判定逻辑（单测 8–25）、投影读面与归属规则对**真实落盘日志**成立（D3b 第 3 节、D4 第 4 节）、`ctx.sessions` 注入有效、工具在 Lead 作用域注册成功且注册路径不抛。未证的是模型拿到这个工具后会不会用对——那需要一次真机轮次，成本见 D3b 交接文档第 4 条的报价，发请求前要先报预估并等确认。
@@ -1016,4 +1069,5 @@ $ # 量 getBoundingClientRect：见上表
 11. **预算只在工具执行处被检查，所以真实花费可以数倍于标称预算。** D8 实测：预算 60,000 的一轮实际计费 228,639（**381%**），其中越过 soft 之后仍有 15 条计费消息。到达档位后**工具面被切断**（不能再加成员、不能再写盘），但两次工具调用之间的推理步、以及被拒后为了重述结论而继续生成的回合都无法被中断。所以成本纪律的准确名称是「工具面预算」，不是「花费上限」——要让上限贴身，检查点必须下沉到模型回合边界，那是上游的能力（见 `D7-upstream-gaps.md`）。README 与 `architecture.md` 已按这个口径改写。
 12. **预算账本的作用域是「进程 × 会话驻留期」**（D9 之后措辞变了，缺口本身没变）：`spend` 现在随 Lead 会话离开存储而清零，所以**重开同一个团队会话等于重新发一份预算**。这是「有明确清零点」换掉「永远不清」的代价，写在 `architecture.md` 已知限制第一条之后。彻底的修法是把用量做成 `ctx.sessionProjections` 折叠单元（宿主侧 `register()` 对插件开放，被堵的只有客户端 `wire` 可见性），代价是要按契约交一个 zod 形状的 `stateSchema`，与本包的零 `@deepseek-ai/*` import 纪律冲突，因此留作独立决定。
 13. **`agent.ctx.effect()` 这条内层路径还没有真机证据**（D9 第 5 节）。它由 `test/lifecycle.test.js` 的两条用例覆盖（agent 作用域自拆、`agent/disposed` 走插件侧 disposer），但真机上是否如类型定义那样存在，要等一次会创建团队 agent 的轮次。
-
+14. **形状切换门禁没有一轮真机证据**（D10 第 2 节）。它改变的是真团队前几步能做什么，而 `quorum.requires: all` 的锁定语义在模型侧会怎么被反应——唤醒成员、改道汇报、还是试图绕路——只能跑一轮才知道。跑绿 12 条单测不等于跑过纪律。
+15. **门禁依赖 Lead 会话的投影驻留**：投影不在本进程时写被拒（刻意 fail-closed），所以「Lead 会话被回收再打开」会让已收敛的团队重新落回 scout。与第 12 条同源，彻底修法仍是把用量与收敛做成投影折叠单元。
