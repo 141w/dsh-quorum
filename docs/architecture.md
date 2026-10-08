@@ -201,7 +201,7 @@ B1 那轮的教训（`allow` 漏 `send_message` → 成员永远交不出、系�
 2. **最小证据即可过关**：一条 `read` 就够，不需要它覆盖结论里的任何断言。
 3. **间接执行算作证据**：`subagent` / `workflow` / `skill` 的结果由别的执行体产出，本口径下仍计为「这个成员动过手」。
 4. **复述不可区分**：成员甲引用成员乙的 verified 结论汇报，日志上与它自己跑过一遍无法区分（法定人数仍要求它自己有证据，但「这条结论被独立验证过」是另一回事）。
-5. **重启即失效**：成员会话不在本进程时读不到日志，历史 `verified` 退化为 `unverifiable`（实测 `live=false`）。这是 fail-closed，不是 bug，但 Lead 侧只有一行文本提醒。
+5. **进程内不再倒退，重启仍会失效**：判定在成员会话还开着、日志真读过的那一刻就按 message id 记住，会话之后 idle/被释放不会把 `verified` 收回去（D12 真机抓到过这个倒退：seq 122 判 `1/2`，seq 128 判 `0/2`，两份日志一行没变，变的只是可用性）。仍诚实的边界：这张表是进程内的，重启后回到 `unverifiable`；从未读到过日志的成员永远是 `unverifiable`，缓存不替它编造证据。
 6. **依赖 `@deprecated` 读面**：`ownEvents()` / `snapshotEvents()` 在上游头文件里标着「new calls are prohibited」。上游真删的那天，本门禁整体退化为 `unverifiable`（依旧不会放行，但会失去可用性），替代路径是引 `dsh-session-query` 的 SQLite 后端。
 
 因此这条纪律的正确表述是：**没有工具痕迹的汇报不算数**，不是**有工具痕迹的汇报算数**。后者仍需要 Lead 自己核对内容与证据是否相称。
@@ -261,7 +261,7 @@ ctx.effect(() => () => { for (const d of attached.values()) d(); attached.clear(
 - **`bash`/`pwsh` 在 `ship` 卡上是绕过路径**：机制的真实边界，不是待办。`scout` 卡带 shell 已在激活期拒绝。
 - **预算账本的作用域是「进程 × 会话驻留期」**：`spend` 随 Lead 会话离开存储而清零（`session/disposed`），插件卸载也清零。所以**重开同一个团队会话等于重新发一份预算**。这不是新缺口——进程重启本来就是这个行为，D6 实测那轮 381% 超支正是同一进程内发生的；本次改动只是把它从"永远不清"换成"有明确清零点"。彻底修法是把用量做成 `ctx.sessionProjections` 的折叠单元（宿主侧 `register()` 对插件开放，被堵的只有客户端 `wire` 可见性，见 `D7-upstream-gaps.md` 第 1 条），那样账本随日志重放、随缓存 checkpoint、随会话生命周期自然结束；代价是要按契约交一个 zod 形状的 `stateSchema`，而本包坚持零 `@deepseek-ai/*` import，所以那是一次独立的决定，不是顺手改。
 - 预算按 teamId 聚合，依赖 `agent/created` 时建立的 session→team 映射；Lead 之外的成员若在其映射建立前就产生用量，会计入不到。teamId 取自 `TeamMembership.id`——**该类型没有 `teamId` 字段**，早先代码写的 `team.teamId ?? team.root` 实际拿到的是 Lead `Agent` 活对象（探针实测把它放进事件负载即抛 `non-JSON-serializable data`）。
-- 终止纪律：**判定 + 等待 + 证据门禁 + 形状切换门禁都已实现**（D3b、D4、D10）。形状切换门禁**没有真机轮次**，只有 12 条单测 + 激活通过；上游 `wait_agent` 唤不醒未运行的成员（实测 `noProgress` / `no-active-peer`），所以踢醒只能由 Lead 自己发 `send_message` 完成；实测 `send_message` 本来就能冷恢复成员，缺的从来不是踢醒机制。
-- 证据门禁的强度上限见上一节「局限」六条。其中「重启后成员会话不常驻」已在真机复现（`live=false`）：重启会把历史 `verified` 全部退化成 `unverifiable`，Lead 侧只有一行返回文本提醒。
+- 终止纪律：**判定 + 等待 + 证据门禁 + 形状切换门禁都已实现**（D3b、D4、D10），且两半都过了真机（D12 拒绝、D13 放行并落盘）；上游 `wait_agent` 唤不醒未运行的成员（实测 `noProgress` / `no-active-peer`），所以踢醒只能由 Lead 自己发 `send_message` 完成；实测 `send_message` 本来就能冷恢复成员，缺的从来不是踢醒机制。
+- 证据门禁的强度上限见上一节「局限」六条。其中「成员会话不常驻」已在真机复现两次：`live=false`（D4）与 D12 的判定倒退（`1/2` → `0/2`，日志未变）。倒退那一半已由投递时判定修掉（见「证据门禁」局限第 5 条），重启那一半仍在——它和预算账本同源，彻底解法同样是把收敛与用量做成能随日志重放的投影折叠单元。
 - **兼容性只在安装期拦得住**：本包用 `peerDependencies: {"@deepseek-ai/dsh": ">=0.2.0-rc.2 <0.3.0"}` 声明兼容范围，因为这是运行时**唯一**真正生效的闸门（`dsh-app-boot` 的 `evaluatePluginCompatibility` 只读 `peerDependencies`，`engines.dsh` 没有任何 reader）。代价是上游发布新的 rc 时用户会被拒绝安装并看到 `allow-version` 指令——这是刻意的：对 alpha 上游，响亮失败优于静默损坏。
 

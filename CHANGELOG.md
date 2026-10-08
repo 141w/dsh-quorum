@@ -6,6 +6,43 @@ While `dsh` itself is `0.2.x` (alpha/rc), a `0.x` version here means: minor bump
 behaviour or the role-card semantics, patch bumps do not. The compatible `dsh` range is declared
 in `package.json` `peerDependencies` and enforced at install time.
 
+## Unreleased
+
+### Fixed
+
+- **A team's verdict could regress while nobody changed anything, and the shape gate acted on it.** Evidence was
+  resolved at query time, so when a member's session left the process its already-earned
+  `verified` became `unverifiable`. Measured live on 2026-10-08 (`docs/verification.md` D12):
+  both members read a file and delivered reports, `quorum_wait` scored `1/2` at seq 122 and
+  `0/2` at seq 128 with no new line in either session log — only availability changed. A
+  verdict that can move backwards cannot honestly gate writes. Verdicts are now judged while
+  the author's log is open and remembered per team message id, with three limits that keep
+  this from becoming a pass-on-delivery path: only what a real read produced is stored
+  (`verified`/`unverified`, never "could not read"), a readable session always outranks the
+  memory, and the memory is scoped to the team and dropped when its Lead session leaves the
+  store. In-process convergence no longer regresses; after a restart it degrades to
+  `unverifiable` exactly as before, which is the same residency boundary the budget ledger
+  has. `test/evidence-memory.test.js` (4 cases) and a D12-shaped case in
+  `test/shape-gate.test.js` pin it.
+
+### Verified
+
+- **The shape gate live, both halves.** Two headless rounds against the same seven-step
+  task in the same target workspace. D12 (433,888 billed) produced the refusal verbatim
+  and, in producing it, exposed the regression this section fixes: `quorum_wait` scored the
+  team `1/2` at seq 122 and `0/2` at seq 128 with nothing new in either session log. D13
+  (159,334 billed), after the fix, showed `Quorum met — 2/2` with **both members
+  `[inactive]`** — the exact availability state that had degraded in D12 — and then the
+  Lead's previously-refused `write` landed: `NOTES-LIVE.md`, 22 bytes, read back from disk
+  rather than from the model's account. `docs/verification.md` D12/D13 carry the raw
+  sequences.
+- **`agent.ctx.effect()` exists and behaves as the types say on the installed runtime**
+  (`[quorum] policing "lead"/"reviewer"/"fixer"` in both rounds), closing the one
+  live-verification gap D9 left open.
+- Stated plainly because it is not a mechanism result: in D13 the Lead called
+  `quorum_wait` directly only because the task text told it to; D12's model burned a
+  `bash` probe and three `wait_agent` calls first. Discoverability is not fixed.
+
 ## 0.3.0 - 2026-10-08
 
 This release changes what a team may do in its first steps and how the bundle uninstalls,

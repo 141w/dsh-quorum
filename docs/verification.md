@@ -1174,6 +1174,59 @@ fixer     04df9a02-…            50,825 billed    2 calls
 
 预时报的是 150–300K（按 D3b 一轮单人审查 × 人数外推），实际 433,888，两个成员都比单人便宜，因为任务被限定为"读一个文件 + 汇报"。**放行那一半仍未验到**：需要第二轮（单成员 + `requires: 1` + 收到汇报立刻 `quorum_wait`），或在投递时判定落地之后一起验。
 
+## D13：投递时判定修好之后，同一场景再跑一轮（2026-10-08 13:06–13:07，实际 159,334 billed）
+
+D12 的缺陷是"判定会倒退"，修法是"日志还开着的那一刻判完就记住"。这轮刻意复用 D12 的同一个七步任务、同一个靶子工作区、同一个 20,000,000 预算叠加层，唯一变化是插件代码——所以两轮可以直接对照，而对照点恰好就是那个缺陷：**这轮两个成员在 `quorum_wait` 时都已经 `[inactive]`，判定却是 `verified`**；D12 同样的可用性给的是 `unverifiable`。
+
+### 1. 被拒 → 收敛 → 放行 → 落盘，全链原文
+
+```
+seq 35 CALL   write {"content":"shape gate live probe\n","file_path":"…/NOTES-LIVE.md"}
+seq 36 ERROR write :: Error: role card "lead" may not write: this team is still in scout shape — 0/2 verified report(s).
+       Outstanding: reviewer [running] not-reported; fixer [running] not-reported. Writes unlock when quorum_wait reports
+       the quorum met, which means each required teammate has delivered a message to the Lead AND its own session log
+       shows a successful non-protocol tool result before that report. This gate is not waivable.
+
+seq 40 CALL   quorum_wait {"timeout_ms":240000}
+seq 48  OK   quorum_wait :: Quorum met — 2/2 teammate reports backed by tool evidence (waited 31624ms); 2 delivered in total.
+       - reviewer [inactive] reported+verified — 2 successful tool result(s) before it reported; earliest: glob at seq 16
+       - fixer  [inactive] reported+verified — 1 successful tool result(s) before it reported; earliest: read at seq 16
+
+seq 57 CALL   write {"content":"shape gate live probe\n","file_path":"…/NOTES-LIVE.md"}
+seq 58  OK   write :: <path>…/NOTES-LIVE.md</path> <type>file</type> <content> Created file </content>
+seq 64 CALL   read {"file_path":"…/NOTES-LIVE.md"}
+seq 65  OK   read :: … <content> 1: shape gate live probe (End of file - total 1 lines) </content>
+```
+
+磁盘上的旁证（不是模型的转述）：
+
+```
+$ ls -la ~/Documents/deepseek-harness/default-workspace/NOTES-LIVE.md
+-rw-------@ 1 wweiqi  staff  22 Oct  8 13:07 …/NOTES-LIVE.md
+$ cat …/NOTES-LIVE.md
+shape gate live probe
+```
+
+启动日志里三条 `policing` 行再次出现（`lead` / `reviewer` / `fixer`，team=session-94010aee-…），D12 那条结论不是一次性的。
+
+### 2. 真实花费，以及它为什么比 D12 便宜 2.7 倍
+
+```
+Lead  session-94010aee-…   70,945 billed   6 calls
+成员  5e48efd7-…           56,285 billed   4 calls
+成员  6d404e64-…           32,104 billed   2 calls
+                            ──────────
+整轮                      159,334 billed
+```
+
+D12 是 433,888 / 21+4+2=27 calls，这轮 159,334 / 12 calls。差别几乎全在 Lead 的 calls：D12 的 Lead 在 `wait_agent` 上空转了三次（seq 84 / 94 / 104，每次 timeout 120–180 秒）还先去 `bash` 查了一遍 `command -v quorum_wait`；这轮它直接调 `quorum_wait`，等 31.6 秒拿到判据就走。**这轮我在任务文本里显式写了"quorum_wait 是你的工具，不要用 bash 查它、也不要用 wait_agent 代替"**——所以这个改善来自提示词，不是机制，不能记在插件头上。D12 记下的那条"模型先烧三次错误尝试"的发现仍然开着，且第二轮没有证明它被修好，只证明了它能被提示词绕过。
+
+### 3. 现在能声称什么，不能声称什么
+
+能声称：形状门禁的两半都在真机上走通——收敛前拒绝（含逐成员点名），收敛后放行并**真的落盘**；证据判定不再因成员 idle 而倒退；豁免（单人会话零注册）、`quorum_wait` 被模型真实调用、拒绝文案原样进入 `tool/result(isError:true)` 且可回放。
+
+不能声称：预算档位与形状档位在同一轮里互相干扰的行为（这轮预算被抬到 20M，故意没让它们相遇）；重启之后同一团队会不会重新锁住（已知会，见「已知缺口」第 12 条）；`waiver` 之外用户会不会找到别的绕路方式（例如让成员用 shell 写文件——成员卡是 scout 时被机制拒绝，但 `ship` 卡带 `bash` 仍是文档里明写的边界）。
+
 ## 已知缺口
 
 1. **拒绝记录无法写进会话日志。** 不是「目前还没写」，而是机制不允许：插件自定义事件类型能写能落盘，但读回来时会被 `KNOWN_SESSION_EVENT_TYPES` 拒绝，且 live `Session.append()` 无法设置 `ignorable` 标记，代价是整个会话永久打不开（见上方纪律 D 实验）。审计要持久，必须换载体；`ctx.logger` 在本机构建里没有任何可见出口。
