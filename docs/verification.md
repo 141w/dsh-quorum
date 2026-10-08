@@ -1446,6 +1446,54 @@ rejected-on-reload shape found in: 0 session(s)
 
 顺带一条与修复无关但撞到的事实：`session-e2a5e835` 修好后不再报 corrupt，改报 `runs under agent preset "standard", which the one-shot runner does not compose`——headless 拒绝恢复 web 端创建的会话。corrupt 检查发生在 preset 组合之前，所以**校验错消失本身就是证据**；但“真能重开”的正证必须用 headless 自己建的会话，故选了 `session-b8c712d9`。
 
+## D17：面板真机目视，以及「点成员行进成员会话」这条欠账（2026-10-08 15:0x，0 token）
+
+浏览器是 chrome-devtools 驱动的独立 Chrome，打的是本机已在跑的 `dsh --profile quorum --port 3097 --no-open`（pid 43077）。全程只读已有会话，没有发起任何模型调用。
+
+### 1. 先记一条会骗人的环境事实
+
+`?token=` 如果用的是**上一次**服务进程打印的那个，页面只回一句 `dsh web authentication required; reopen the URL printed by dsh web.`——这句话读起来像前端坏了，实际只是 token 每次启动重新签发。当前值在服务器 stdout 的第一行（这台机器上是 `~/.qoder-cn/tmp/dsh-gate.log`）。以后复现先看这个文件，别去怀疑客户端。
+
+### 2. 面板内容：0.3.1 改的两处都按预期落地
+
+在团队会话 `spawn_teammate(name="reviewer", …)`（10月4日 17:08，Lead 侧）点 `Quorum 2`，面板从上到下是：
+
+```
+智能体
+角色卡
+● lead        本会话
+● reviewer    活跃   ›
+面板只镜像投影到浏览器的 Team 记录。汇报收敛与证据判定由服务端 quorum_wait 完成，
+不经此通道；点成员名可进入它的会话看过程。
+```
+
+标题带是「智能体」，不再有团队名；成员列表第一行就是 Lead，右侧标「本会话」。这两条此前只在单测的 DOM 断言里过，没在真机上看过。徽标 `2` = Lead + 1 名成员，与官方面板同口径（`buildTeamProjection` 把 lead 放在 `members` 首位，官方也按 `team.members.length` 计数）。
+
+### 3. 两个尺寸是量过的，不是"看起来没溢出"
+
+用 `getBoundingClientRect()` 直接读，不看截图猜：
+
+| 视口 | 面板 | 右边界 | 距右 | 距底 | 页面横向滚动宽 |
+|---|---|---|---|---|---|
+| 1728×932 | x=748.5 y=45.1 **w=340** h=248.1 | 1088.5 | −639.5 | −638.7 | 1728 = 视口宽 |
+| 300×600 | x=16 y=45.1 **w=268** h=265.2 | 284 | −16 | −289.7 | 300 = 视口宽 |
+
+300 那一行是关键：`268 = 300 − 32`，正是 `.qrm-panel{width:min(340px, calc(100vw - 32px))}` 的 clamp 在起作用——左右各留 16px，脚注折成 4 行仍在框内，`documentElement.scrollWidth` 与视口相等所以整页没有横向溢出。1728 那一行走的是 340px 上限本身。
+
+一条不属于本面板、窄窗口下却会挡路的观察：300px 时宿主的右侧边栏会占满整个视口，此时**按坐标**点不到我们的触发器，得先收边栏。触发器在 header 里怎么排是宿主的事（它的右边界量到 300.07，亚像素级贴边），我们只保证面板不越界。
+
+### 4. 点成员行确实跳进了那个成员的会话
+
+点 `reviewer` 那一行之后：页面标题变成 `<system-reminder> You are teammate "revi — DeepSeek Harness`，header 面包屑变成 `spawn_teammate(name="reviewer", descript / 切换子智能体：read-only code reviewer`，正文是 reviewer 自己的 transcript，其中第二条正是它被门禁拦住的那一步：
+
+> **Tried the write** to `/tmp/quorum-live-target/review-result.md` — denied by the read-only `scout` guard; I did not retry, and I stated the limitation in my message so the lead can persist the file if needed.
+
+这条从面板第一版起就欠着：面板文案写着「点成员名可进入它的会话看过程」，但从来没在真机上点过。现在点得动、到的就是那个成员的会话、看到的正是它自己的证据。
+
+### 5. 顺手白得一条 D16 修复的独立正证
+
+同一轮里在应用内浏览器打开 `session-e2a5e835`（D4 的编造拒绝实验，10月3日 23:29），它**完整渲染出了历史**，包括 Lead 逐字贴出的那段「已报告但未验证……不计入 quorum」。修复前在同一个 URL 上看到的是 `历史加载失败：stored session "session-e2a5e835-…" is corrupt: … session event at seq 26 lacks an identified message`，那条横幅现在没了。D16 用 headless 重开当判据，这一条是同一个修复在 **web 端的读取路径**上也成立：两个入口都过。
+
 ## 已知缺口
 
 1. **拒绝记录无法写进会话日志。** 不是「目前还没写」，而是机制不允许：插件自定义事件类型能写能落盘，但读回来时会被 `KNOWN_SESSION_EVENT_TYPES` 拒绝，且 live `Session.append()` 无法设置 `ignorable` 标记，代价是整个会话永久打不开（见上方纪律 D 实验）。审计要持久，必须换载体；`ctx.logger` 在本机构建里没有任何可见出口。
