@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { apply } from '../index.js'
+import { hostHarness as harness } from './fixtures/host-ctx.js'
 
 // M2: the holes the M1 audit found, pinned as tests BEFORE the fix.
 //
@@ -26,71 +27,6 @@ const CONFIG = {
   defaultRole: { shape: 'scout', allow: ['read'] },
   budget: { maxBilledTokens: 2000000, softTier: 0.7, hardTier: 0.9 },
   quorum: { requires: 'all', timeoutMs: 300000, pollMs: 30000 },
-}
-
-function harness() {
-  const roster = new Map()
-  const guards = []
-  const sections = []
-  const registrations = []
-  const lines = []
-  const injections = []
-  const listeners = new Map()
-
-  const ctx = {
-    logger: { info() {}, warn() {} },
-    on(type, fn) {
-      if (!listeners.has(type)) listeners.set(type, [])
-      listeners.get(type).push(fn)
-    },
-    agentTeams: {
-      tryMembership(agent) {
-        const member = (roster.get(agent.parentId) ?? []).find((m) => m.agent === agent)
-        if (member) return { root: agent.parentAgent, id: agent.parentId, role: 'teammate', name: member.name }
-        if (agent.subagent) return undefined
-        return { root: agent, id: agent.id, role: 'lead', name: 'lead' }
-      },
-      listMembers(agent) {
-        const teamId = agent.parentId ?? agent.id
-        return [{ name: 'lead' }, ...(roster.get(teamId) ?? []).map((m) => ({ name: m.name }))]
-      },
-    },
-  }
-
-  const create = (id, opts = {}) => {
-    const self = {
-      id,
-      parentId: opts.parentId,
-      parentAgent: opts.parentAgent,
-      subagent: false,
-      session: { id, cwd: opts.cwd ?? '/work' },
-      inject(message) { injections.push({ agent: self, message }) },
-    }
-    self.ctx = {
-      tools: {
-        guard(fn) { guards.push({ agent: self, fn }) },
-        register(tool) { registrations.push({ agent: self, tool }) },
-      },
-      systemPrompt: { section(s) { sections.push({ agent: self, ...s }) } },
-    }
-    if (opts.parentId) {
-      if (!roster.has(opts.parentId)) roster.set(opts.parentId, [])
-      roster.get(opts.parentId).push({ agent: self, name: opts.name })
-    }
-    return self
-  }
-
-  const emit = (type, ...args) => {
-    const original = console.log
-    console.log = (...rest) => lines.push(rest.join(' '))
-    try {
-      for (const fn of listeners.get(type) ?? []) fn(...args)
-    } finally {
-      console.log = original
-    }
-  }
-
-  return { ctx, create, emit, guards, sections, registrations, lines, injections, roster }
 }
 
 /** Police one team and hand back the guard bound to the named role. */

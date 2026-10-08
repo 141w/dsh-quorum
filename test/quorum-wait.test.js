@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { apply, judgeQuorum, waitForQuorum } from '../index.js'
 import { fakeSession, memberLog, report } from './fixtures/member-log.js'
+import { makeEffect } from './fixtures/host-ctx.js'
 
 // Fixtures use the shapes read off the installed runtime, not invented ones:
 // TeamMemberView (dsh-experimental-agent-team lib/types/types.d.ts:42-52) and the
@@ -209,7 +210,7 @@ test('the Lead gains quorum_wait exactly once, a teammate gains nothing, and the
   const a = msg('m1', REVIEWER, 'reviewer', LEAD)
   const registrations = []
   const waits = []
-  const listeners = []
+  const listeners = new Map()
   const evidenceReads = []
   let reads = 0
 
@@ -217,6 +218,9 @@ test('the Lead gains quorum_wait exactly once, a teammate gains nothing, and the
   const reviewer = { id: REVIEWER, parentId: LEAD, parentAgent: lead, subagent: false, session: { id: REVIEWER, cwd: '/work' } }
   for (const self of [lead, reviewer]) {
     self.ctx = {
+      // `apply()` arms a role card inside two nested effects, so the stub must
+      // answer `effect`; see fixtures/host-ctx.js for why omitting it is a lie.
+      effect: makeEffect([], `agent(${self.id})`).effect,
       tools: { guard() {}, register(tool) { registrations.push({ agent: self, tool }) } },
       systemPrompt: { section() {} },
     }
@@ -224,7 +228,14 @@ test('the Lead gains quorum_wait exactly once, a teammate gains nothing, and the
 
   const ctx = {
     logger: { info() {}, warn() {} },
-    on(_type, fn) { listeners.push(fn) },
+    // Keyed by event type, because the runtime dispatches per type: a flat list
+    // would feed the `agent/disposed` and `session/disposed` listeners an
+    // `agent/created` payload and tear down the very registration this case counts.
+    on(type, fn) {
+      if (!listeners.has(type)) listeners.set(type, [])
+      listeners.get(type).push(fn)
+    },
+    effect: makeEffect([], 'ctx').effect,
     agentTeams: {
       tryMembership: (agent) => (agent === reviewer
         ? { root: lead, id: LEAD, role: 'teammate', name: 'reviewer' }
@@ -264,7 +275,7 @@ test('the Lead gains quorum_wait exactly once, a teammate gains nothing, and the
     const original = console.log
     console.log = () => {}
     try {
-      for (const fn of listeners) fn({ agent })
+      for (const fn of listeners.get('agent/created') ?? []) fn({ agent })
     } finally {
       console.log = original
     }

@@ -514,13 +514,25 @@ function renderVerdict(value) {
 export function apply(ctx, config) {
   validateConfig(config)
 
+  // Billed tokens per team, and the routing the `session/event` listener needs to
+  // attribute a message to a team. Both are keyed by ids the runtime brands from a
+  // Session — `TeamId` is the root session id branded
+  // (dsh-experimental-agent-team/lib/types/types.d.ts:6-12) — so both have a named
+  // moment of no-longer-meaning-anything, and `session/disposed` is that moment.
+  // Without the drop below these two grew for the lifetime of the process.
   const spend = new Map()
   const sessionTeam = new Map()
-  // Teams whose Lead is already policed, so a fan-out registers the Lead once.
-  const policed = new Set()
-  // Guards bind to an agent scope, so dedupe must key on the object, not the id:
-  // a reused id with a fresh Agent object still needs its own guard.
-  const guarded = new WeakSet()
+
+  // Everything this bundle registered on an agent's own context, keyed by the Agent
+  // object and holding the plugin-side disposer. Two reasons it is a Map and not the
+  // WeakSet this file used before:
+  //   - `practices.md:19` requires the disposer to be *kept* ("unloading the plugin
+  //     does not dispose agent.ctx registrations by itself"), and a WeakSet cannot
+  //     name what it holds when the plugin unloads;
+  //   - membership in the map is the "already policed" test, so dedupe still keys on
+  //     object identity, not on `agent.id` — a reused id with a fresh Agent must
+  //     still get its own guard (docs/architecture.md).
+  const attached = new Map()
 
   const deny = (reason) => {
     ctx.logger.info(`quorum: denied -> ${reason}`)
@@ -556,10 +568,11 @@ export function apply(ctx, config) {
    * Hand the Lead one primitive `wait_agent` does not provide: a wait whose
    * stop condition is the durable mailbox rather than "something changed".
    * Registered on the Lead's own agent scope, so teammates never see it.
+   * @returns the disposer that unregisters the tool.
    */
   function armLeadWait(agent, teamId) {
     const cfg = config.quorum ?? {}
-    agent.ctx.tools.register({
+    return agent.ctx.tools.register({
       name: 'quorum_wait',
       description: WAIT_DESCRIPTION,
       parameters: WAIT_PARAMETERS,
@@ -593,14 +606,29 @@ export function apply(ctx, config) {
     })
   }
 
+  /**
+   * Bind a role card to one agent for the rest of its life, and hand back the
+   * teardown that unbinds it.
+   * @returns a disposer that unregisters everything this call registered.
+   */
   function enforce(agent, roleKey, teamId) {
-    if (guarded.has(agent)) return
-    guarded.add(agent)
     const card = config.roles[roleKey] ?? config.defaultRole
-    const budgetRatio = () => spend.get(teamId) / config.budget.maxBilledTokens
+    const budgetRatio = () => (spend.get(teamId) ?? 0) / config.budget.maxBilledTokens
     const isLead = roleKey === 'lead'
+    // Every upstream registration returns its exact disposer
+    // (dsh-tools/lib/types/index.d.ts:636 and :655,
+    // dsh-system-prompt/lib/types/index.d.ts:239). Dropping them on the floor is
+    // what `practices.md` Principle 2 forbids: an `agent.ctx` registration has two
+    // owners, and the plugin's own unload has no way to reach one it never kept.
+    const disposers = []
+    // `typeof` rather than a bare push: a host that returns nothing here would
+    // otherwise make teardown throw, and a teardown that throws partway through is
+    // how a half-uninstalled plugin gets shipped.
+    const keep = (dispose) => {
+      if (typeof dispose === 'function') disposers.push(dispose)
+    }
 
-    agent.ctx.tools.guard((exec) => {
+    keep(agent.ctx.tools.guard((exec) => {
       const ratio = budgetRatio()
       const isWrite = WRITE_TOOLS.has(exec.name)
       const args = parseArgs(exec.arguments)
@@ -638,12 +666,12 @@ export function apply(ctx, config) {
           return deny(`path ${path} is outside the write scopes [${card.writeScopes?.join(', ') ?? ''}] granted to role card "${roleKey}"`)
         }
       }
-    })
+    }))
 
     // Reaching here as Lead already implies a roster bigger than the pseudo-row,
     // because a team of one returns before enforce() is ever called.
     if (isLead) {
-      armLeadWait(agent, teamId)
+      keep(armLeadWait(agent, teamId))
       // The wait can only be armed once a teammate exists, which is strictly
       // after this Lead's first prompt was assembled. Measured on 2026-10-03:
       // the tool reached the second assembly only, and the model reported
@@ -663,7 +691,7 @@ export function apply(ctx, config) {
     // denial the model has to walk into first, so discipline stays reactive.
     // Registered on agent.ctx, so it can only ever widen this agent's prompt.
     try {
-      agent.ctx.systemPrompt.section({
+      keep(agent.ctx.systemPrompt.section({
         name: 'quorum-role-card',
         order: 1000,
         interpolate: false,
@@ -676,7 +704,7 @@ export function apply(ctx, config) {
           'A report counts only when backed by evidence: at least one successful tool result that is not send_message or another team-protocol tool must precede it, or the Lead\'s quorum_wait marks your conclusion unverified.',
           'These limits are enforced by a monotonic guard at the tool boundary. Retrying or routing around it will not change the outcome.',
         ].filter(Boolean).join('\n'),
-      })
+      }))
     } catch (error) {
       // A failed declaration must never take down session creation the way an
       // undeclared service injection did; enforcement still stands on its own.
@@ -686,13 +714,47 @@ export function apply(ctx, config) {
 
     console.log(`[quorum] policing "${roleKey}" (${card.shape}) team=${teamId}`)
     ctx.logger.info(`quorum: bound role card "${roleKey}" (shape=${card.shape}) to a new agent`)
+
+    // Reverse order, so the prompt section and the Lead's tool go before the guard
+    // that references them: an agent must never be left holding a guard whose
+    // budget it can no longer read.
+    return () => {
+      for (const dispose of disposers.reverse()) dispose()
+      disposers.length = 0
+    }
+  }
+
+  /**
+   * Police one agent exactly once, on the two scopes that own the registration.
+   * @param agent - the live Agent to bind a role card to.
+   * @param roleKey - the role card name to resolve against the config.
+   * @param teamId - the team whose budget this agent's actions are charged against.
+   */
+  function police(agent, roleKey, teamId) {
+    if (!agent?.ctx || attached.has(agent)) return
+    // The inner effect puts the registrations on the agent's own scope, so agent
+    // disposal removes them with no help from us; the outer one is this bundle's
+    // own handle on the same teardown, taken because plugin unload does not reach
+    // `agent.ctx` (`practices.md:19`). Shape verified against the runtime:
+    // dsh-schedule/lib/index.js:2658 does exactly this two-scope dance.
+    attached.set(
+      agent,
+      ctx.effect(
+        () => agent.ctx.effect(() => enforce(agent, roleKey, teamId), `quorum: ${roleKey}`),
+        `quorum: ${roleKey}`,
+      ),
+    )
   }
 
   ctx.on('agent/created', ({ agent }) => {
     const team = ctx.agentTeams.tryMembership(agent)
     if (!team) return
     const teamId = team.id
-    sessionTeam.set(agent.session?.id, teamId)
+    // Only a real session id may be routed: `session/event` looks this up by id, so
+    // an `undefined` key would accrue other sessions' usage into one team and no
+    // teardown would ever name it.
+    const sessionId = agent.session?.id
+    if (typeof sessionId === 'string') sessionTeam.set(sessionId, teamId)
 
     if (team.role === 'lead') {
       // `tryMembership` resolves every non-teammate agent to `{role: 'lead', root: self}`,
@@ -708,14 +770,38 @@ export function apply(ctx, config) {
         }
         return
       }
-    } else if (!policed.has(teamId)) {
+    } else if (team.root) {
       // The Lead was created before any teammate existed, so it is bound here.
       // `TeamMembership.root` is the live Lead Agent; `id` is the only usable key.
-      policed.add(teamId)
-      enforce(team.root, 'lead', teamId)
+      // A membership without a root would throw inside this `serial` listener, and
+      // a throw here is the D2 failure: the session stops being creatable at all.
+      police(team.root, 'lead', teamId)
     }
-    policed.add(teamId)
-    enforce(agent, team.role === 'lead' ? 'lead' : team.name, teamId)
+    police(agent, team.role === 'lead' ? 'lead' : team.name, teamId)
+  })
+
+  ctx.on('agent/disposed', ({ agent }) => {
+    const detach = attached.get(agent)
+    if (!detach) return
+    attached.delete(agent)
+    // By the time AgentLoop emits this the agent's own scope has already unwound
+    // (dsh-agent/lib/types/runtime-types.d.ts:232), so this call is the *bookkeeping*
+    // half: it drops the strong Agent reference this Map would otherwise hold for
+    // the life of the process, and it is a no-op if the scope beat us to it.
+    detach()
+  })
+
+  ctx.on('session/disposed', (session) => {
+    const sessionId = session?.id
+    if (typeof sessionId !== 'string') return
+    const teamId = sessionTeam.get(sessionId)
+    sessionTeam.delete(sessionId)
+    // `TeamId` is the root session id branded, so only the Lead's own session
+    // leaving the store ends the team. A member leaving must not zero the ledger:
+    // the budget it burned is exactly what the surviving members are measured
+    // against, and dropping it here would hand a team a fresh allowance for
+    // restarting its slowest member.
+    if (teamId === sessionId) spend.delete(sessionId)
   })
 
   ctx.on('session/event', (session, event) => {
@@ -731,4 +817,19 @@ export function apply(ctx, config) {
       ctx.logger.info(`quorum: team reached ${Math.round(next / config.budget.maxBilledTokens * 100)}% of its billed-token budget; new members are now blocked`)
     }
   })
+
+  // The plugin's own finalizer. Registered before any agent exists, so on unload
+  // Cordis runs it last (fiber.d.ts:38, reverse order) — by then the per-agent
+  // effects are already down, and this is what guarantees nothing is left holding a
+  // dead Agent, a stale ledger or a routing entry.
+  ctx.effect(() => () => {
+    // Explicit, even though the per-agent effects registered on this same fiber are
+    // already down before this one runs (reverse registration order): the disposers
+    // are idempotent, and "unloading the bundle removes every guard" is exactly the
+    // half practices.md:19 says the runtime will not do for us.
+    for (const detach of attached.values()) detach()
+    attached.clear()
+    spend.clear()
+    sessionTeam.clear()
+  }, 'quorum: plugin state')
 }

@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { apply, judgeQuorum, judgeEvidence } from '../index.js'
 import { fakeSession, memberLog, report } from './fixtures/member-log.js'
+import { makeEffect } from './fixtures/host-ctx.js'
 
 // A report that no tool execution backs is exactly the failure this whole layer
 // exists to catch: the earlier "model self-reports confidence" design, moved from
@@ -34,11 +35,15 @@ const HONEST = memberLog([{ name: 'read', text: 'def add(a, b):\n    return a + 
  */
 async function askLead(own, opts = {}) {
   const registrations = []
-  const listeners = []
+  const listeners = new Map()
   const lead = { id: LEAD, subagent: false, session: { id: LEAD, cwd: '/work' } }
   const reviewer = { id: REVIEWER, parentId: LEAD, parentAgent: lead, subagent: false, session: { id: REVIEWER, cwd: '/work' } }
   for (const self of [lead, reviewer]) {
     self.ctx = {
+      // `apply()` arms a role card inside two nested effects, so this roster-shaped
+      // stub has to answer `effect` even though the teardown is not what the case
+      // under test is about. The fixture explains why a stub that omits it is a lie.
+      effect: makeEffect([], `agent(${self.id})`).effect,
       tools: { guard() {}, register(tool) { registrations.push({ agent: self, tool }) } },
       systemPrompt: { section() {} },
     }
@@ -47,7 +52,11 @@ async function askLead(own, opts = {}) {
   let lookups = 0
   const ctx = {
     logger: { info() {}, warn() {} },
-    on(_type, fn) { listeners.push(fn) },
+    on(type, fn) {
+      if (!listeners.has(type)) listeners.set(type, [])
+      listeners.get(type).push(fn)
+    },
+    effect: makeEffect([], 'ctx').effect,
     agentTeams: {
       tryMembership: (agent) => (agent === reviewer
         ? { root: lead, id: LEAD, role: 'teammate', name: 'reviewer' }
@@ -74,9 +83,9 @@ async function askLead(own, opts = {}) {
   const original = console.log
   console.log = () => {}
   try {
-    for (const fn of listeners) fn({ agent: lead })
+    for (const fn of listeners.get('agent/created') ?? []) fn({ agent: lead })
     reviewer.rostered = true
-    for (const fn of listeners) fn({ agent: reviewer })
+    for (const fn of listeners.get('agent/created') ?? []) fn({ agent: reviewer })
   } finally {
     console.log = original
   }
