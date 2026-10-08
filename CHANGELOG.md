@@ -10,9 +10,16 @@ in `package.json` `peerDependencies` and enforced at install time.
 
 **Publish status: tagged, not yet on npm.** The CI release ran and npm refused the
 `PUT` with `404` because the workflow's OIDC identity is not yet a trusted publisher on
-this package; configure those three fields on npmjs.com and re-run the job. Until then
-the fix installs from the tag (`github:141w/dsh-quorum#v0.3.2`). Raw log lines:
-`docs/verification.md` D16.
+this package — provenance was minted and pushed to the sigstore transparency log first,
+so the missing piece is one npmjs.com setting, not the pipeline
+(`docs/verification.md` D16). Until it is configured and the job re-run, the fix installs
+from the tag: `dsh plugin --profile <name> add -w 'github:141w/dsh-quorum#v0.3.2'`.
+
+Also shipped with this release's remediation: `.probe/repair-bricked-sessions.mjs`, which
+repairs the sessions the defect already bricked. **All 12 damaged conversations on this
+machine are repaired and verified reopenable** (`session-b8c712d9-…` reopened and replied
+after repair); originals are byte-for-byte in `~/.dsh/backups/bricked-sessions-2026-10-08/`.
+Upgrading does not undo the damage — installing 0.3.2 and running that tool does.
 
 Patch release, and the reason to upgrade rather than wait: **every team round on 0.1.0
 through 0.3.1 could permanently brick the conversation it policed.** The fix is one field
