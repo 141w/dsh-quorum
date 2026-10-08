@@ -1,0 +1,52 @@
+# Temporary diagnostic: print the OIDC claims this repository presents to npm.
+#
+# Why it exists: `npm publish` from CI returns a bare `E404` when the OIDC identity
+# does not match a configured trusted publisher, so the only way to tell "the config
+# is wrong" from "the config is right but npm is matching a different claim" is to read
+# the claims themselves. This workflow requests a token for the *npm registry audience*
+# — the same audience npm validates — and decodes it.
+#
+# It publishes nothing. The token itself is never printed, only its claim set.
+# Delete this file once the trusted-publisher configuration is confirmed working.
+
+name: oidc-claims
+
+on:
+  workflow_dispatch:
+    inputs:
+      audience:
+        description: 'OIDC audience to request a token for'
+        default: 'https://registry.npmjs.org/'
+        type: choice
+        options:
+          - 'https://registry.npmjs.org/'
+          - 'sts.amazonaws.com'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  claims:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decode the claims npm would see
+        env:
+          AUDIENCE: ${{ inputs.audience }}
+        run: |
+          set -euo pipefail
+          response=$(curl -sS --retry 3 --max-time 20 \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            -H "Accept: application/json; api-version=1.0" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}")
+          printf '%s' "$response" | node -e '
+            let raw = "";
+            process.stdin.on("data", (chunk) => { raw += chunk });
+            process.stdin.on("end", () => {
+              const token = JSON.parse(raw).value
+              const claims = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString())
+              for (const key of Object.keys(claims).sort()) {
+                console.log(`${key} = ${JSON.stringify(claims[key])}`)
+              }
+            })
+          '
