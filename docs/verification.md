@@ -1398,7 +1398,53 @@ $ ls -la NOTES-AB.md
 
 A/B 的开销也比预估低：报的是 5–10 万 billed，实际整对 52,438（Lead 流 31,060 + 恢复轮 21,378，成员会话 0）。成员被明确要求不布置任务，是这轮便宜的主因——**证明"守卫在不在"不需要成员干活**，这一点值得留给下一轮的成本设计。
 
-## 已知缺口
+## D16：0.3.2 的 CI 发布被 npm 拒了，以及 12 条坏会话的修复（2026-10-08 14:2x–14:4x）
+
+### 1. 发布失败的原因是一条 npm 设置，不是流水线
+
+`v0.3.2` tag 与 Release 建好，workflow 跑完前置检查后在 `npm publish` 上失败：
+
+```
+npm notice publish Signed provenance statement with source and build information from GitHub Actions
+npm notice publish Provenance statement published to transparency log: https://search.sigstore.dev/?logIndex=3142584605
+npm error code E404
+npm error 404 Not Found - PUT https://registry.npmjs.org/dsh-quorum - Not found
+npm error 404  'dsh-quorum@0.3.2' is not in this registry.
+```
+
+**provenance 已经签好并进 sigstore 透明日志，被拒的是包的 PUT**：GitHub Actions 的 OIDC 身份还不是这个包的 trusted publisher（缺该设置时 npm 回 404，而不是 403）。缺的是 npmjs.com 上那三项 `141w` / `dsh-quorum` / `release.yml`；配上之后重跑同一个 job 即可。README 与 CHANGELOG 里“已上架”的说法已改回真实状态，在此之前唯一的取修复路径是 `github:…#v0.3.2`。
+
+### 2. 修复 12 条被写坏的会话：`.probe/repair-bricked-sessions.mjs`
+
+补的最小字段是那条 `user/message` payload 的 `id`（新 UUID）与 `role: "user"`，键序排成 `content, source, role, id`，与健康会话逐字段一致。`source.kind` 保持 `system` 不动：校验器只要求它是非空字符串，而那正是模型当时看到的文本，改它就是**改写历史而不是修键**。
+
+我自己在这条路上错了两次，各自暴露一件事实，都记下来：
+
+1. **整文件重压成单帧**被运行时拒为 `corrupt Zstandard session log: first frame is not exactly one header line`。会话日志是多帧拼接（`zstd -l` 对这个文件报 17 帧），头帧必须只含那一行 `session` header。单帧重写把“晚一点的校验错”换成“更早的读取错”，**比原病更坏**——当场从备份回滚，`zstd -t` 通过，未丢字节。工具因此改成只重建文本确实变化的帧，其余帧按字节拷贝。
+2. 第二版把 `node:zlib` 的 `ZstdDecompress` 当一次性函数调用（Node 22 里它是**流类别**，要 `new`），于是每帧解码都抛错，工具的守卫就把 12 条全判成“帧边界不可信、拒写”，**一个字节都没动**。守卫只会说“不”的那一种是好东西；这个 bug 是因为我追问“它为什么全部拒绝”才露出来的。改走 CLI 后帧表验证通过。
+
+修复过程与结果：
+
+```
+$ node .probe/repair-bricked-sessions.mjs                    # 干跑
+dry run: 12 session(s), 12 event(s)
+
+$ node .probe/repair-bricked-sessions.mjs --apply --only session-b8c712d9    # 先修一条，并拿运行时当判据
+repaired 1 event(s); backup ~/.dsh/backups/bricked-sessions-2026-10-08/session-b8c712d9-….zstd.orig
+$ dsh --profile quorum-live headless --session-id session-b8c712d9-… "只回复两个字：ok"
+exit=0
+{"type":"final","text":"ok"}                                  # 被 D12 写坏的那条，重开并回话
+
+$ node .probe/repair-bricked-sessions.mjs --apply
+applied: 10 session(s), 10 event(s)
+$ node .probe/scan-corrupt-sessions.mjs
+sessions scanned: 53
+rejected-on-reload shape found in: 0 session(s)
+```
+
+原始字节全在 `~/.dsh/backups/bricked-sessions-2026-10-08/`（12 个 `.zstd.orig`）。D15 引用的 seq 号仍是原日志里的号：修复只往那条消息里加两个键，不增删事件，所以文档里的引用不会漂。
+
+顺带一条与修复无关但撞到的事实：`session-e2a5e835` 修好后不再报 corrupt，改报 `runs under agent preset "standard", which the one-shot runner does not compose`——headless 拒绝恢复 web 端创建的会话。corrupt 检查发生在 preset 组合之前，所以**校验错消失本身就是证据**；但“真能重开”的正证必须用 headless 自己建的会话，故选了 `session-b8c712d9`。
 
 ## 已知缺口
 
@@ -1419,3 +1465,4 @@ A/B 的开销也比预估低：报的是 5–10 万 billed，实际整对 52,438
 15. **门禁依赖 Lead 会话的投影驻留**：投影不在本进程时写被拒（刻意 fail-closed），所以「Lead 会话被回收再打开」会让已收敛的团队重新落回 scout。与第 12 条同源，彻底修法仍是把用量与收敛做成投影折叠单元。
 16. **形状门禁的拒绝文案在真机上会命中三种分支**（D15 的 stalled 分支是第一次），但**放行之后成本档接管**这条仍未同轮验证——D13/D15 都把预算抬开了。
 17. **`agent.inject()` 不是校验点**：上游在该边界不校验 `UserMessage`（缺 `id`、错 `role`、`source.kind` 不在 `MessageSourceMap` 里都能写下去），代价落在会话日志的读取端——会话永久打不开。本包已按契约交合法对象（D15），但**插件写坏用户会话这件事目前没有机制级防线**，这是上游 gap 的候选第五条。
+18. **0.3.2 还没在 npm 上**（D16 第 1 节）：CI 的 `PUT` 被拒，因为 Actions 身份还不是这个包的 trusted publisher；在那之前 `github:…#v0.3.2` 是唯一能拿到修复的路径。另：修复坏会话的工具是帧级手术，改完必须让**运行时自己重开一次**当判据——只跑日志校验器不够，我第一次就是靠单帧重写骗过了自己的扫描器。
