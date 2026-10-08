@@ -8,6 +8,33 @@ in `package.json` `peerDependencies` and enforced at install time.
 
 ## Unreleased
 
+### Fixed
+
+- **The discipline no longer outlives the bundle that installed it.** `tools.guard()`,
+  `tools.register()` and `systemPrompt.section()` each return their exact disposer
+  (`dsh-tools/lib/types/index.d.ts:636,655`;
+  `dsh-system-prompt/lib/types/index.d.ts:239`), and all three were being dropped on
+  the floor. `references/practices.md:19` says an `agent.ctx` registration has *two*
+  owners precisely because "unloading the plugin does not dispose `agent.ctx`
+  registrations by itself" — so a disabled bundle went on refusing tool calls for every
+  agent it had ever policed. Registrations are now armed inside `agent.ctx.effect()` and
+  kept in a plugin-side `ctx.effect()` keyed by the Agent object, released on
+  `agent/disposed` and on plugin unload, in the shape `dsh-schedule/lib/index.js:2658-2668`
+  uses.
+- **The ledgers are bounded, and each has a named end.** `spend` and `sessionTeam` grew
+  for the whole life of the process. `sessionTeam` is dropped per session on
+  `session/disposed`; the budget drops when the **Lead's own** session leaves the store —
+  `TeamId` is that session id branded
+  (`dsh-experimental-agent-team/lib/types/types.d.ts:6-12`) — and deliberately *not* when
+  a member's does, because the tokens a member burned are what the surviving members are
+  measured against. `policed` is gone: the Agent-keyed disposer map already expresses
+  "armed exactly once", and it keys on object identity, which is what the guard's scope
+  requires. An agent with no session id is no longer routed at all, since an `undefined`
+  key is one no teardown can ever name. The consequence is written into
+  `docs/architecture.md`: budget accounting is scoped to *process × session residency*, so
+  reopening a team's Lead session restarts its budget — the scope a process restart
+  already had, now reached explicitly instead of by never cleaning up.
+
 ### Added
 
 - **A teammate row in the Quorum panel now opens that member's own session.** The panel
@@ -91,6 +118,25 @@ in `package.json` `peerDependencies` and enforced at install time.
   by package name) are accepted instead of pinning a client version.
 
 ### Added (tests)
+
+- `test/lifecycle.test.js`: 8 cases for the two-owner teardown contract — the agent's own
+  scope unarms guard + tool + prompt section, `agent/disposed` runs the plugin-side
+  disposer and drops the strong Agent reference, double disposal is a no-op, unloading the
+  bundle unarms everything still registered, a disposed guard *stops denying* (the
+  mechanism is really uninstalled, not merely hidden), a member's departure keeps the
+  ledger while the Lead's drops it, a keyless session cannot spend a team's budget, and a
+  fresh Lead object for the same id re-arms. They were run against `HEAD` first: **8/8
+  red**.
+- `test/fixtures/host-ctx.js`: the host stub the three `apply()` suites share, now built to
+  the runtime's actual disposal semantics — every registration returns a disposer, and
+  `effect(run, label)` runs the body immediately and treats its return as the finalizer
+  (`cordis/lib/types/fiber.d.ts:145-157`). A stub whose `guard()` returns `undefined`
+  cannot express the contract these cases test, so it would let a plugin that keeps no
+  disposer pass its own suite.
+- The two bespoke stubs in `evidence-gate.test.js` and `quorum-wait.test.js` now dispatch
+  listeners **by event type**. With a flat list, `emit(agent)` also fed the new
+  `agent/disposed` and `session/disposed` listeners, which tore down the very registration
+  those cases count — a failure the stub had, not the plugin.
 
 - `test/client-half.test.js`: 9 cases driving the browser half without a browser —
   module contract, service declaration, slot registration as an effect, the empty-state

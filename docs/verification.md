@@ -906,7 +906,74 @@ ls: …: No such file or directory
 
 - 三档里只有 soft/hard 被真实触发；**soft 档的「提示不拒绝」行为没有被单独观测到**（本轮从越过 soft 到越过 hard 之间只隔了很短的一段，soft 的提示是否改变了模型的策略无法从本轮区分）。
 - 没有验证被拒之后 Lead 的**最终答复质量**——它有没有如实说出哪些没验证。那要读 Lead 的最后一条消息并人工判断，不是机制判定。
-- 只跑了 1 轮。`spend` 是按 teamId 聚合的常驻 Map，重启清零，所以每一轮都要在一次运行内越过，不能跨轮累计（这一点已在 §1 的陷阱里记录）。
+- 只跑了 1 轮。`spend` 是按 teamId 聚合的常驻 Map，重启清零（2026-10-08 起清零点提前到「Lead 会话离开存储」，见 D9），所以每一轮都要在一次运行内越过，不能跨轮累计（这一点已在 §1 的陷阱里记录）。
+
+## D9：生命周期——注册有两个主人（2026-10-08，单测先行 + 零 token 启动）
+
+### 改的是什么
+
+`practices.md:19` 要求 per-agent 注册同时挂在两个主人上：`agent.ctx.effect()`（agent 释放即回收）**并且**把它的 disposer 按 agent 存进插件自己的 effect（插件卸载也能回收），原文「unloading the plugin does not dispose `agent.ctx` registrations by itself」。改动前三个返回值全被丢弃：`tools.guard()`（`dsh-tools/lib/types/index.d.ts:655` 注释 `@returns the exact disposer that unregisters the guard`）、`tools.register()`（:636）、`systemPrompt.section()`（`dsh-system-prompt/lib/types/index.d.ts:239`）。`spend`/`sessionTeam`/`policed` 三个容器则只增不减。
+
+### 1. 基线（改前先跑）
+
+```
+$ npm test
+# tests 61
+# pass 61
+# fail 0
+```
+
+### 2. 测试先行：新用例对改动前的 `HEAD` 全红
+
+`test/lifecycle.test.js` 写完先拿 `git show HEAD:index.js` 覆盖跑一遍：
+
+```
+$ git show HEAD:index.js > index.js; node --test test/lifecycle.test.js
+# tests 8
+# pass 0
+# fail 8
+$ # 还原改动
+$ npm test
+# tests 69
+# pass 69
+# fail 0
+```
+
+8 条断言全是**行为**断言（注册表里还剩什么、预算还拦不拦），不是「某个 map 变小了」——后者从外部观测不到，写成断言也只是自我安慰。最关键的一条是「disposed guard stops denying」：守卫被拆掉之后必须**不再拒绝**，这才证明机制真的被卸载了，而不是只是藏起来。
+
+### 3. 桩必须是真语义，否则测试会替错误代码背书
+
+三处 `apply()` 用的桩此前都不返回 disposer，也没有 `effect`。若桩的 `guard()` 返回 `undefined`，那么「丢弃 disposer」这个 bug 本身在单测里不可见。所以 `test/fixtures/host-ctx.js` 按运行时语义重建：`effect(run, label)` 立即执行 body、把返回值当 finalizer、给出幂等 disposer（`cordis/lib/types/fiber.d.ts:145-157`），body 返回不可用形状即抛 `TypeError`（照上游 :151 的行为），每个注册返回真正把自己摘出去的 disposer。
+
+顺带暴露出两处**桩自身的错误**：`evidence-gate.test.js` 与 `quorum-wait.test.js` 把所有监听塞进一个扁平数组，`emit(agent)` 会把 `agent/created` 的载荷喂给新的 `agent/disposed` 监听器，于是把该用例正要数的注册拆掉了。改成按事件类型分发后两条套件恢复绿。**这是桩的问题，不是插件的问题**，写在这里是为了下次别把它当成回归。
+
+### 4. 零 token 启动验证
+
+```
+$ pkill -f "dsh --profile quorum"; sleep 3
+$ cd ~ && nohup dsh --profile quorum --port 3097 --no-open > ~/.qoder-cn/tmp/dsh-lifecycle.log 2>&1 &
+$ sleep 14; cat ~/.qoder-cn/tmp/dsh-lifecycle.log
+dsh web: http://127.0.0.1:3097/?token=…
+
+$ grep -cE "did not activate|failed to import|pending|Error:|startup failed" ~/.qoder-cn/tmp/dsh-lifecycle.log
+0
+$ dsh --profile quorum --dump-config | grep -A 6 "id: quorum"
+# == dsh-quorum
+- id: quorum
+  name: dsh-quorum
+  config:
+    roles:
+      lead:
+        shape: ship
+```
+
+`apply()` 现在在激活期就调用 `ctx.effect()` 注册收尾 finalizer。**如果宿主没有这个方法，激活就会失败并留下 `1 entry did not activate`**（D7 记录的那条静默失败路径），所以「零警告 + 行在配置树里 + 客户端面板出现」这三件事合起来是 `ctx.effect` 在本机构建里可用的正面证据。浏览器侧快照里头部按钮是 `Quorum 1`，说明 client 半也照常挂载。
+
+### 5. 本轮**没有**验到的部分（不含糊过去）
+
+- `agent.ctx.effect()` 那条内层路径本轮**未被真机执行**：`agent/created` 只在团队会话被恢复时才会走到 `police()`，而本次启动没有恢复任何团队会话（日志里没有 `[quorum] policing` 行；对照 `.probe/boot-d3b.log` 里有）。要跑通它需要一次 Lead 真派成员的轮次，约 150–300K billed，**发请求前需报预估并等确认**。
+- 面板「点开成员自己的会话」那次人工点击仍未做（浏览器操作被权限层拦下，未硬重试）。
+- 卸载时守卫真的消失这件事只有单测，没有 `dsh plugin remove` 的真机演示。
 
 ## 已知缺口
 
@@ -921,3 +988,6 @@ ls: …: No such file or directory
 9. **门禁依赖的两个读面在上游头文件里是 `@deprecated`**（`Session.ownEvents()` / `snapshotEvents()`，注释原文「new calls are prohibited」）。当前无替代同步读面，替代方案是 `dsh-session-query` 那条 SQLite 路，代价是要引一层查询后端依赖；上游若真删这两个方法，本门禁会退化成全部 `unverifiable`（依旧不会放行，但会失去可用性）。
 10. **浏览器拿不到 mailbox。** `agentTeam` 的 wire view 是 `{members, tasks, failure}`（`projection.js:269`），法定人数、证据判定、预算档位都无法在客户端直接读出；头部面板因此只展示角色卡与任务板。见 D6 第 3 节——第一版展示过假的 `0/2`。
 11. **预算只在工具执行处被检查，所以真实花费可以数倍于标称预算。** D8 实测：预算 60,000 的一轮实际计费 228,639（**381%**），其中越过 soft 之后仍有 15 条计费消息。到达档位后**工具面被切断**（不能再加成员、不能再写盘），但两次工具调用之间的推理步、以及被拒后为了重述结论而继续生成的回合都无法被中断。所以成本纪律的准确名称是「工具面预算」，不是「花费上限」——要让上限贴身，检查点必须下沉到模型回合边界，那是上游的能力（见 `D7-upstream-gaps.md`）。README 与 `architecture.md` 已按这个口径改写。
+12. **预算账本的作用域是「进程 × 会话驻留期」**（D9 之后措辞变了，缺口本身没变）：`spend` 现在随 Lead 会话离开存储而清零，所以**重开同一个团队会话等于重新发一份预算**。这是「有明确清零点」换掉「永远不清」的代价，写在 `architecture.md` 已知限制第一条之后。彻底的修法是把用量做成 `ctx.sessionProjections` 折叠单元（宿主侧 `register()` 对插件开放，被堵的只有客户端 `wire` 可见性），代价是要按契约交一个 zod 形状的 `stateSchema`，与本包的零 `@deepseek-ai/*` import 纪律冲突，因此留作独立决定。
+13. **`agent.ctx.effect()` 这条内层路径还没有真机证据**（D9 第 5 节）。它由 `test/lifecycle.test.js` 的两条用例覆盖（agent 作用域自拆、`agent/disposed` 走插件侧 disposer），但真机上是否如类型定义那样存在，要等一次会创建团队 agent 的轮次。
+

@@ -41,7 +41,7 @@ agent/created
 - `listMembers()` 的实现（`lib/index.js:436-466`）**恒定把 Lead 伪行放在第 0 位**，因此 `length <= 1` 就是「从未 spawn 过任何人」的可靠信号；
 - 命中即 `return`，**守卫和提示词 section 都不注册**，普通会话与未安装本插件时逐字节一致；
 - 第一个 teammate 的 `agent/created` 里用 `TeamMembership.root`（活 Lead Agent 对象）**回头补注册 Lead**，因此 Lead 与成员同时受约束；
-- 补注册按 `teamId` 去重（`policed`），多个成员不会把 Lead 重复约束；但去重键**不能用 agent.id**——守卫的作用域是 agent 对象，同一个 id 的新 Agent 实例必须重新注册（用 `WeakSet` 按对象身份去重）。
+- 补注册的去重键是**Agent 对象本身**（`attached: Map<Agent, disposer>`），不是 `teamId` 也不是 `agent.id`：守卫绑的是 agent 作用域，同一个 id 的新 Agent 实例必须重新注册，而一个团队里后到的成员不能把 Lead 重复约束。这张表同时是清理句柄——见「生命周期：注册有两个主人」一节。
 
 **为什么这件事必须是代码保证**：在此之前，「安装插件不改变普通会话」实际是靠 `lead` 卡的 `writeScopes: []`（= 不限路径）**碰巧宽松**得到的属性。任何人给 lead 卡写上路径，全机所有普通会话会一起被收紧——治理层把自己的正确性押在了一个配置值的默认情况上。现在这个属性写进了控制流，改配置改不掉。
 
@@ -210,13 +210,41 @@ B1 那轮的教训（`allow` 漏 `send_message` → 成员永远交不出、系�
 
 审计的自然做法是把判定结果写回会话日志，这条路被机制封死（见上一节与 `D2-finding.md`）：写自定义 `type` 会让该会话永久打不开。所以证据门禁**只消费已有事件**，`index.js` 里没有任何 `append(`，插件也不注册新的事件类型。判定结果只活在 `quorum_wait` 的返回值与 Lead 的那一轮上下文里——不落盘、不可追溯，这是当前明确的代价。
 
+## 生命周期：注册有两个主人
+
+上游把卸载语义写成了一条硬要求（`dsh-agent-preset/skills/cordis-plugin-development/references/practices.md`）：
+
+> Principle 2（:8）：*"A registration on another context, such as `agent.ctx`, has two owners: keep its disposer in your plugin's own effect too, so either teardown removes it."*
+> :19：*"Register per-agent behavior on `agent.ctx` … Wrap it in one `agent.ctx.effect()` and also keep that disposer, keyed by agent, in your plugin's own effect; **unloading the plugin does not dispose `agent.ctx` registrations by itself**."*
+
+在此之前，本插件把三个返回值全丢在地上：`tools.guard()`（`dsh-tools/lib/types/index.d.ts:655` 明确 `@returns the exact disposer`）、`tools.register()`（:636）、`systemPrompt.section()`（`dsh-system-prompt/lib/types/index.d.ts:239`）。后果不是"内存里多几个对象"这么客气：**卸载后守卫还挂在 agent 作用域上，意味着一个被禁用的插件仍在拒绝工具调用**——治理层自称"结构上做不到"，而撤销它的那条路根本不存在。
+
+现在的形状（照抄上游自己的做法，`dsh-schedule/lib/index.js:2658-2668` 就是这个双作用域模式）：
+
+```
+attached = new Map()                       // Agent 对象 → 插件侧 disposer
+attached.set(agent, ctx.effect(() => agent.ctx.effect(() => enforce(...), label), label))
+ctx.on('agent/disposed', ({agent}) => { attached.get(agent)?.(); attached.delete(agent) })
+ctx.effect(() => () => { for (const d of attached.values()) d(); attached.clear() }, 'quorum: plugin state')
+```
+
+两条时序事实决定了这个形状，都读自运行时而不是推测：
+
+- `agent/disposed` 在**驱动静默与作用域注册展开之后**、会话摘除之前发出（`dsh-agent/lib/types/runtime-types.d.ts:232`）。所以 agent 侧的 `agent.ctx.effect` 已经自己收过了，插件这遍 `detach()` 是**记账**——它删掉的是这张 Map 对活 Agent 的强引用，且重复调用是 no-op（`cordis/lib/types/fiber.d.ts:149`）。
+- 插件自己的 finalizer 注册得最早，卸载时按逆序跑得最晚（`fiber.d.ts:38`）。所以它负责收尾三张表，而不是负责拆注册。
+
+两张 `Map` 也各有终点：`sessionTeam` 按 `session/disposed` 摘；`spend` 只在**Lead 自己的会话**离开存储时摘，因为 `TeamId` 就是那个会话 id 的 brand（`dsh-experimental-agent-team/lib/types/types.d.ts:6-12`）。成员会话离开**不能**清零账本——它烧掉的额度正是存活成员要被对照衡量的基数。
+
+代价明写在下面的「已知限制」里。`test/lifecycle.test.js` 8 条用例钉住这些性质，全部断言的是**行为**（注册表里还剩什么、预算还拦不拦），不是"某个 map 小了"——后者从外面观测不到，写成断言也只是自我安慰。这 8 条先对 `HEAD` 跑过：8/8 全红，打上本次改动后 69/69 全绿。
+
 ## 已知限制
+
 
 - **拒绝记录既不可见也不持久**：`ctx.logger` 在本机构建里不进 stdout、不进浏览器 console、不写会话日志（实测），而会话日志又不接受插件自定义事件类型（见上一节）。「可追溯」这条卖点目前没有机制级载体。
 - **路径判定不是安全边界**：现在是解析后的包含关系（不再是子串），但仍然看不见符号链接，也挡不住 `bash`/`pwsh`。见「能力边界的真实形状」一节列出的三条残余。
 - **`bash`/`pwsh` 在 `ship` 卡上是绕过路径**：机制的真实边界，不是待办。`scout` 卡带 shell 已在激活期拒绝。
+- **预算账本的作用域是「进程 × 会话驻留期」**：`spend` 随 Lead 会话离开存储而清零（`session/disposed`），插件卸载也清零。所以**重开同一个团队会话等于重新发一份预算**。这不是新缺口——进程重启本来就是这个行为，D6 实测那轮 381% 超支正是同一进程内发生的；本次改动只是把它从"永远不清"换成"有明确清零点"。彻底修法是把用量做成 `ctx.sessionProjections` 的折叠单元（宿主侧 `register()` 对插件开放，被堵的只有客户端 `wire` 可见性，见 `D7-upstream-gaps.md` 第 1 条），那样账本随日志重放、随缓存 checkpoint、随会话生命周期自然结束；代价是要按契约交一个 zod 形状的 `stateSchema`，而本包坚持零 `@deepseek-ai/*` import，所以那是一次独立的决定，不是顺手改。
 - 预算按 teamId 聚合，依赖 `agent/created` 时建立的 session→team 映射；Lead 之外的成员若在其映射建立前就产生用量，会计入不到。teamId 取自 `TeamMembership.id`——**该类型没有 `teamId` 字段**，早先代码写的 `team.teamId ?? team.root` 实际拿到的是 Lead `Agent` 活对象（探针实测把它放进事件负载即抛 `non-JSON-serializable data`）。
-- 预算的 `spend` / `sessionTeam` 两个 `Map` 只增不减，插件卸载时也不清理；`agent.ctx` 上的注册没有保留 disposer（上游 `practices.md:8,19` 要求两条都做）。对长进程是内存问题，对重载是行为问题，都还没修。
 - 终止纪律：法定人数的**判定 + 等待 + 证据门禁**已实现（D3b、D4），**形状切换门禁未实现**。上游 `wait_agent` 唤不醒未运行的成员（实测 `noProgress` / `no-active-peer`），所以踢醒只能由 Lead 自己发 `send_message` 完成；实测 `send_message` 本来就能冷恢复成员，缺的从来不是踢醒机制。
 - 证据门禁的强度上限见上一节「局限」六条。其中「重启后成员会话不常驻」已在真机复现（`live=false`）：重启会把历史 `verified` 全部退化成 `unverifiable`，Lead 侧只有一行返回文本提醒。
 - **兼容性只在安装期拦得住**：本包用 `peerDependencies: {"@deepseek-ai/dsh": ">=0.2.0-rc.2 <0.3.0"}` 声明兼容范围，因为这是运行时**唯一**真正生效的闸门（`dsh-app-boot` 的 `evaluatePluginCompatibility` 只读 `peerDependencies`，`engines.dsh` 没有任何 reader）。代价是上游发布新的 rc 时用户会被拒绝安装并看到 `allow-version` 指令——这是刻意的：对 alpha 上游，响亮失败优于静默损坏。
