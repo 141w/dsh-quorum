@@ -102,6 +102,30 @@ test('GATE: the verdict follows the record, and only recomputes when it moves', 
   assert.ok(h.evidenceReads.length > afterFirst, 'the reopen really did re-read')
 })
 
+test('GATE: an idle member does not pull a converged team back into scout', () => {
+  // The D12 scenario, reproduced from the transcript: both members read a file and
+  // delivered, `quorum_wait` scored 1/2 at seq 122, and six events later the same
+  // question answered 0/2 — not because anything changed in the logs, but because both
+  // sessions had been released from the process. With writes gated on that number, the
+  // team was locked by a verdict that could regress backwards.
+  const { h, lead, members, write } = squad(['reviewer', 'fixer'])
+  h.converge('lead-1')
+  assert.equal(write(lead), undefined, 'converged: the Lead may write')
+
+  h.release(members[0].id)
+  h.release(members[1].id)
+  h.converge('lead-1')
+  assert.equal(write(lead), undefined, 'idle members do not un-earn what their logs already showed')
+  assert.equal(write(members[1]), undefined, 'and the ship member stays able to write')
+
+  // Without a single report ever being readable, the same release must still hold shut:
+  // this is the half of the fix that must not become a way to pass on delivery alone.
+  const locked = squad(['reviewer'])
+  locked.h.release(locked.members[0].id)
+  locked.h.converge('lead-1')
+  assert.match(locked.write(locked.lead), /still in scout shape/, 'a never-read log is still not evidence')
+})
+
 // ── 3. It cannot be talked around ──
 
 test('GATE: while locked, reading and reporting still work, so no team deadlocks', () => {

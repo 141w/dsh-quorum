@@ -555,6 +555,24 @@ export function apply(ctx, config) {
   // mailbox changes all arrive as events, so nothing else can move the verdict.
   const gateMemo = new Map()
 
+  // Evidence verdicts already earned, remembered per team message id.
+  //
+  // This exists because of D12: two members both read a file and both reported, the
+  // gate judged `verified` for one of them at seq 122 — and then judged the whole team
+  // `0/2` six events later at seq 128, with not one new line in either session log.
+  // What changed was availability: the members went idle and their sessions left the
+  // process, and because the verdict was computed by *reading at query time*, a durable
+  // fact answered a volatile lookup. A verdict that can regress backwards cannot honestly
+  // gate writes, so the verdict is now kept from the moment it was earned.
+  //
+  // What may be remembered is only what a real read produced (`verified` /
+  // `unverified`). "I could not read it" is never stored: a member whose log was never
+  // readable stays `unverifiable` forever, which is the whole point of the gate.
+  const evidenceRemembered = new Map()
+  // Which message ids belong to which team, so a team ending can drop its own entries
+  // rather than the whole table. Same discipline as `spend`: a bound with a named end.
+  const teamEvidenceIds = new Map()
+
   // Everything this bundle registered on an agent's own context, keyed by the Agent
   // object and holding the plugin-side disposer. Two reasons it is a Map and not the
   // WeakSet this file used before:
@@ -578,22 +596,52 @@ export function apply(ctx, config) {
    * the same log that would be corrupted. `ownEvents()` rather than the full
    * snapshot, because a fork inherits its ancestor's history and an ancestor's
    * `read` is not this member's evidence.
+   *
+   * A verdict earned from a readable log is remembered against the message ids it
+   * covers, and reused when that session is later released — see `evidenceRemembered`
+   * for the D12 regression that made this necessary. The memory never substitutes for
+   * a read: if no verdict was ever produced while the log was open, the answer is still
+   * `unverifiable`.
+   * @param teamId - the team whose mailbox the ids came from, for scoping the memory.
+   * @param memberId - the reporter's session id.
+   * @param messageIds - its delivered message ids, the boundary the window is cut at.
    */
-  function resolveEvidence(memberId, messageIds) {
+  function resolveEvidence(teamId, memberId, messageIds) {
+    const remembered = (list) => {
+      const hits = list.map((id) => evidenceRemembered.get(id)).filter(Boolean)
+      if (!hits.length) return undefined
+      // Any remembered `verified` wins: the logs are append-only, so work that preceded
+      // one report cannot un-happen, and a later report from the same member is simply a
+      // second claim that has to carry its own evidence.
+      return hits.find((v) => v.status === 'verified') ?? hits[hits.length - 1]
+    }
+
     const session = ctx.sessions.get(memberId)
     if (!session) {
-      return { status: 'unverifiable', detail: `member session ${memberId} is not loaded in this process, so its log cannot be read` }
+      return remembered(messageIds) ?? {
+        status: 'unverifiable',
+        detail: `member session ${memberId} is not loaded in this process, so its log cannot be read`,
+      }
     }
     let events
     try {
       events = session.ownEvents()
     } catch (error) {
-      return { status: 'unverifiable', detail: `reading its own events failed: ${error?.message ?? error}` }
+      // A failed read is not a fact about the member's work, so it is not remembered.
+      return remembered(messageIds) ?? { status: 'unverifiable', detail: `reading its own events failed: ${error?.message ?? error}` }
     }
     if (!Array.isArray(events)) {
-      return { status: 'unverifiable', detail: 'its session exposed no event list' }
+      return remembered(messageIds) ?? { status: 'unverifiable', detail: 'its session exposed no event list' }
     }
-    return judgeEvidence({ events, messageIds })
+    const verdict = judgeEvidence({ events, messageIds })
+    if (verdict.status === 'verified' || verdict.status === 'unverified') {
+      if (!teamEvidenceIds.has(teamId)) teamEvidenceIds.set(teamId, new Set())
+      for (const id of messageIds) {
+        evidenceRemembered.set(id, verdict)
+        teamEvidenceIds.get(teamId).add(id)
+      }
+    }
+    return verdict
   }
 
   /**
@@ -639,7 +687,9 @@ export function apply(ctx, config) {
       delivered: state.delivered,
       leadId: teamId,
       requires: config.quorum?.requires,
-      evidence: resolveEvidence,
+      // The resolver is bound to this team so an earned verdict is remembered under
+      // the team that paid for it, and dropped when that team ends.
+      evidence: (memberId, messageIds) => resolveEvidence(teamId, memberId, messageIds),
     })
     const gate = {
       open: verdict.quorumMet,
@@ -704,7 +754,9 @@ export function apply(ctx, config) {
               delivered: team.delivered,
               leadId: teamId,
               requires: cfg.requires,
-              evidence: resolveEvidence,
+              // The resolver is bound to this team so an earned verdict is remembered under
+      // the team that paid for it, and dropped when that team ends.
+      evidence: (memberId, messageIds) => resolveEvidence(teamId, memberId, messageIds),
             }
           },
           wait: (ms) => (ms >= MIN_CHANGE_WAIT_MS
@@ -940,6 +992,12 @@ export function apply(ctx, config) {
       // entry here would also make the gate answer from a dead Lead's projection.
       roots.delete(sessionId)
       gateMemo.delete(sessionId)
+      // The remembered verdicts end with the team too. This does soften the fix in one
+      // specific way worth naming: end the team and reopen it, and a previously earned
+      // `verified` is `unverifiable` again. That is the same process-residency boundary
+      // the budget already has (docs/architecture.md), not a new hole.
+      for (const id of teamEvidenceIds.get(sessionId) ?? []) evidenceRemembered.delete(id)
+      teamEvidenceIds.delete(sessionId)
     }
   })
 
@@ -972,5 +1030,7 @@ export function apply(ctx, config) {
     sessionTeam.clear()
     roots.clear()
     gateMemo.clear()
+    evidenceRemembered.clear()
+    teamEvidenceIds.clear()
   }, 'quorum: plugin state')
 }

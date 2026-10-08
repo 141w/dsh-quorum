@@ -105,6 +105,12 @@ export function hostHarness() {
 
   /** Every member-session read the evidence gate performs, in order. */
   const evidenceReads = []
+  /**
+   * Members whose session has been released from the process: `sessions.get` answers
+   * `undefined` for them, which is the exact D12 situation — the durable log still
+   * holds the work, but nothing is readable right now.
+   */
+  const released = new Set()
 
   const rowsOf = (teamId) => (roster.get(teamId) ?? []).map((m) => ({
     id: m.agent.id,
@@ -148,6 +154,7 @@ export function hostHarness() {
     // fixtures/member-log.js, which is decoded from a real session log.
     sessions: {
       get(id) {
+        if (released.has(id)) return undefined
         evidenceReads.push(id)
         for (const rows of roster.values()) {
           const hit = rows.find((m) => m.agent.id === id)
@@ -264,6 +271,8 @@ export function hostHarness() {
     lock,
     /** Make the Team record unreadable, the way a session this process never loaded is. */
     unloadProjection,
+    /** Release one member's session from the process, as going idle eventually does. */
+    release: (id) => released.add(id),
     evidenceReads,
   }
 }
