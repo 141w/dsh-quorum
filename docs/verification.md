@@ -1054,6 +1054,60 @@ $ dsh --profile quorum --dump-config | grep -A 3 "transition:"
 
 不给 `waiver`：能在轮次中被 agent 说服的门禁就是提示词约定，正是这层要消灭的东西。写 `transition.waiver` 会在激活期被拒而不是被忽略——"能配但没用"比"不能配"更坏。真要关只在配置里显式写 `gateWritesOnQuorum: false`，并且 `GATE: an explicit false is honoured` 保证那是唯一通道。
 
+## D11：发布前对已推送 tag 的实装核验（2026-10-08，0 token）
+
+README 里那句「pin 到 v0.3.0」要么被测过，要么不许写。装的是**远端 tag**，不是本地工作区，所以这条同时验了三件事：tag 指向的内容是对的、包元数据没漏、以及发布物在真实 pnpm 解析路径下能组合。
+
+```
+$ git push -q origin main && git tag v0.3.0 && git push -q origin v0.3.0
+$ cd ~ && time dsh plugin --profile refcheck add -w 'github:141w/dsh-quorum#v0.3.0'
+dependencies:
++ dsh-quorum 0.3.0
+Done in 1m 37s using pnpm v9.15.9
+elapsed: 98s
+```
+
+`v0.1.0` 那次的 7.6s 是**只解析我们这一个包**的耗时；这次 98s 里绝大部分是它顺带解析的运行时候选包（`dsh-subprocess-local` 的 postinstall 出现在输出里）。两个数都写下来，免得下次有人拿 98s 当成"装不上"。
+
+装出来的 profile 记的是 durable 形式，`--dump-config` 里层与行都在：
+
+```
+$ cat ~/.dsh/profiles/refcheck/package.json | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['dependencies'], d['dsh']['profile']['bundles'])"
+{'dsh-quorum': 'github:141w/dsh-quorum#v0.3.0'} ['@deepseek-ai/dsh-base', 'dsh-quorum']
+
+$ dsh --profile refcheck --dump-config | grep -B1 -A3 "id: quorum"
+# == dsh-quorum
+- id: quorum
+  name: dsh-quorum
+  config:
+    roles:
+
+$ grep -A1 "transition:" ~/.dsh/profiles/refcheck/node_modules/dsh-quorum/cordis.patch.yml
+        transition:
+          # The scout -> ship switch. While this is true — the default — EVERY role in
+
+$ node -p "require(process.env.HOME+'/.dsh/profiles/refcheck/node_modules/dsh-quorum/package.json').version"
+0.3.0
+```
+
+### 顺手把 D7 的 gap 2 在发布物上复现了一次
+
+`refcheck` 里**只有**我们的 bundle，没装 Agent Teams profile，所以启动就是那次实测过的静默失败：
+
+```
+$ dsh --profile refcheck --port 3098 --no-open
+dsh: warning: 1 entry did not activate
+quorum (dsh-quorum): pending (waiting for service: agentTeams)
+```
+
+对 0.3.0 依然成立，README 第 3 条警告因此一个字都不能删。这也是 D7 里那条"让包自己能声明 remedy"的诉求最有说服力的样本：一个用户照 README 少装一个 bundle，看到的只有 `1 entry did not activate`。
+
+### 发布这一步**没有**由我执行
+
+`.github/workflows/release.yml` 的注释和 npm 的机制一致：trusted publishing 要把 publisher 挂到**已存在**的包上，所以第一个版本只能从维护者机器上出（`npm login` + 2FA + `npm publish --access public`，再去 npmjs.com 填 Organization / Repository / Workflow filename 三项）。凭据与 OTP 在她手上，我不代持也不试跑；CI 那条路从第二个版本起才通。
+
+`v0.3.0` tag 已推送（`git ls-remote --tags` 显示 `refs/tags/v0.3.0^{}` 指向发布提交）；GitHub Release 刻意**没有**先建——release 一旦 published 就会触发 `npm publish --access public --provenance`，而那时包还不存在，只会留下一条红色的失败记录。顺序是：先手工首发布，再建 Release。
+
 ## 已知缺口
 
 1. **拒绝记录无法写进会话日志。** 不是「目前还没写」，而是机制不允许：插件自定义事件类型能写能落盘，但读回来时会被 `KNOWN_SESSION_EVENT_TYPES` 拒绝，且 live `Session.append()` 无法设置 `ignorable` 标记，代价是整个会话永久打不开（见上方纪律 D 实验）。审计要持久，必须换载体；`ctx.logger` 在本机构建里没有任何可见出口。

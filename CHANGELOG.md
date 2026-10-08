@@ -14,6 +14,12 @@ before upgrading a workspace: the shape switch is on by default, and the Lead is
 The first version is published from a maintainer machine (see `.github/workflows/release.yml`),
 because npm cannot attach a trusted publisher to a package that does not exist yet.
 
+Everything shipped here was installed from the pushed tag and re-composed before release
+(`docs/verification.md` D11): `dsh plugin add -w 'github:141w/dsh-quorum#v0.3.0'` records the
+ref, `--dump-config` shows the `# == dsh-quorum` layer with `transition.gateWritesOnQuorum`,
+and starting that profile without the Agent Teams bundle still reproduces D7's silent
+`pending (waiting for service: agentTeams)` — so warning 3 in the README stays mandatory.
+
 ### Breaking
 
 - **A team now starts in scout, and nothing writes until the quorum converges.** With
