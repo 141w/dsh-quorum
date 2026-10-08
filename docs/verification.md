@@ -1412,7 +1412,18 @@ npm error 404 Not Found - PUT https://registry.npmjs.org/dsh-quorum - Not found
 npm error 404  'dsh-quorum@0.3.2' is not in this registry.
 ```
 
-**provenance 已经签好并进 sigstore 透明日志，被拒的是包的 PUT**：GitHub Actions 的 OIDC 身份还不是这个包的 trusted publisher（缺该设置时 npm 回 404，而不是 403）。缺的是 npmjs.com 上那三项 `141w` / `dsh-quorum` / `release.yml`；配上之后重跑同一个 job 即可。README 与 CHANGELOG 里“已上架”的说法已改回真实状态，在此之前唯一的取修复路径是 `github:…#v0.3.2`。
+**provenance 已经签好并进 sigstore 透明日志，被拒的是包的 PUT**：GitHub Actions 的 OIDC 身份还不是这个包的 trusted publisher（缺该设置时 npm 回 404，而不是 403）。README 与 CHANGELOG 里“已上架”的说法已改回真实状态，在此之前唯一的取修复路径是 `github:…#v0.3.2`。
+
+要配的那一项在 npm 官方文档里叫 **Trusted Publisher** 区块，位置与字段（照 `docs.npmjs.com/trusted-publishers/` 原文核对过，不是凭印象写的）：
+
+- 入口是**包自己的 Settings 页**（`https://www.npmjs.com/package/dsh-quorum/settings`），不是账号设置、也不叫 “Publishing”。在该页找 **Trusted Publisher** 区块 → **Select your publisher** 下点 **GitHub Actions** 按钮。
+- 三个必填字段的原文标签是 **Organization or user** / **Repository** / **Workflow filename**，对应值 `141w` / `dsh-quorum` / `release.yml`。文件名只填 `release.yml`，**不带路径、必须含 `.yml` 后缀**，且该文件要在 `.github/workflows/` 根下（本仓库满足）。**Environment name 留空**——`publish` job 没用 GitHub environment。
+- 前置条件这边都已满足：workflow 有 `permissions: id-token: write`，`actions/setup-node@v5` 显式指了 `registry-url`，publish 步骤是 `npm publish --access public --provenance`。npm 侧要求 CLI ≥ 11.5.1 / Node ≥ 22.14.0，本机是 npm 12.2.0。
+- **包的 owner 是 npm 账号 `wwq9979`（`npm view dsh-quorum maintainers` 只有这一个），不是 GitHub 的 `141w`。** 登录成别的账号就看不到那个区块——我第一次给指引时把 `141w` 写成了“你的 npm 账号”，这是错的。
+
+一条会决定操作顺序的事实，之前不知道：**新建的 trusted publisher 必须在 2 天内完成第一次成功发布**，否则配置过期、不可编辑，只能删掉重建。所以「配好」和「重跑 `gh run rerun 37737157184`」之间不能隔周末。
+
+不依赖这套 UI 的兜底：`0.3.1` 本来就是她本机 `npm publish --access public` 手工发的（`npm whoami` 现在仍是 `wwq9979`），照同一条路发 `0.3.2` 一样能止血，代价是**这个版本没有 provenance**（`--provenance` 走 OIDC，只有 CI 里拿得到）。
 
 ### 2. 修复 12 条被写坏的会话：`.probe/repair-bricked-sessions.mjs`
 
