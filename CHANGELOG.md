@@ -6,7 +6,13 @@ While `dsh` itself is `0.2.x` (alpha/rc), a `0.x` version here means: minor bump
 behaviour or the role-card semantics, patch bumps do not. The compatible `dsh` range is declared
 in `package.json` `peerDependencies` and enforced at install time.
 
-## Unreleased
+## 0.3.0 - 2026-10-08
+
+This release changes what a team may do in its first steps and how the bundle uninstalls,
+so it is a minor bump under the `0.x` rule at the top of this file. Read **Breaking**
+before upgrading a workspace: the shape switch is on by default, and the Lead is inside it.
+The first version is published from a maintainer machine (see `.github/workflows/release.yml`),
+because npm cannot attach a trusted publisher to a package that does not exist yet.
 
 ### Breaking
 

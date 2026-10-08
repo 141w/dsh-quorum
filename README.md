@@ -28,15 +28,17 @@ dsh plugin --profile <name> add -w github:141w/dsh-quorum
 
 `github:` is how you install it today. **The package is not published to npm yet**, so `add dsh-quorum` resolves to nothing, and no in-app search will find it either — dsh has no plugin marketplace, only a form that takes a package name, a GitHub repo or a local directory. What makes a dsh plugin findable on npm is the keyword convention (`dsh`, `dsh-plugin`, `deepseek-harness`), which this package declares for when it is published.
 
+That first publish cannot be done by CI: npm attaches a trusted publisher to a package that already exists, so `0.x` has to go out from a maintainer machine once (`npm login` with 2FA, then `npm publish --access public`, then the three-field Trusted Publisher entry on npmjs.com). `.github/workflows/release.yml` documents the sequence, and every release after the first goes through it.
+
 **The first command is slow, and it is not stuck.** `@deepseek-ai/dsh-web-app` pulls close to 300 packages; measured on this machine it took 20 minutes with one automatic socket-timeout retry. The other two take seconds.
 
 Pin it if you care about what actually runs — upstream's own guidance is to lock the revision, because a later push to the default branch would otherwise change the code that executes at install time:
 
 ```sh
-dsh plugin --profile <name> add -w 'github:141w/dsh-quorum#v0.1.0'
+dsh plugin --profile <name> add -w 'github:141w/dsh-quorum#v0.3.0'
 ```
 
-Verified: resolves in 7.6s, records `github:141w/dsh-quorum#v0.1.0` in the profile, and `--dump-config` still shows the `# == dsh-quorum` layer.
+Measured for `v0.1.0` on 2026-10-04: resolves in 7.6s, records `github:141w/dsh-quorum#v0.1.0` in the profile, and `--dump-config` still shows the `# == dsh-quorum` layer. The same check for `v0.3.0` is recorded in `docs/verification.md` D11.
 
 Installing from a checkout works identically and is what the docs here were verified with:
 
@@ -44,7 +46,7 @@ Installing from a checkout works identically and is what the docs here were veri
 dsh plugin --profile <name> add -w /path/to/dsh-quorum
 ```
 
-**Three things will bite you if you skip them:**
+**Four things will bite you if you skip them:**
 
 1. **Always pin the version.** For the `@deepseek-ai/dsh-experimental-*` packages the `latest` dist-tag points at an **older line** (`0.1.5-alpha.2`), not at the `0.2.0-rc.2` that matches the runtime. Installing without a version gets you a bundle that silently does not load.
 2. **Always pass `-w`.** A profile is a pnpm workspace whose root is the profile itself, so `pnpm add` refuses without `--workspace-root` (`ERR_PNPM_ADDING_TO_ROOT`).
@@ -56,6 +58,16 @@ dsh plugin --profile <name> add -w /path/to/dsh-quorum
    ```
 
    Measured, not hypothetical: that is the exact output of installing `github:141w/dsh-quorum` into a fresh profile and starting it.
+
+4. **Do not hand-write a plugin row into your profile's `cordis.patch.yml`.** `scope` is a field of a *layer*, not of a row, and the user layer is not `shared` — so `dsh-config-profile` rejects the row, the bundle never activates, and the only sign is `dsh: warning: 1 entry did not activate`. Measured both ways on 2026-10-04: the same row copied from the bundle layer into the top level of `profile.cordis.patch.yml` produced exactly that. What the user layer **is** for is overriding a row that already exists, by id:
+
+   ```yaml
+   - id: quorum
+     name: dsh-quorum
+     config: { … }        # patch semantics replace the whole `config`; restate every key
+   ```
+
+   That path is not theoretical — `docs/D6-cost-tier-live.md` lowered the budget that way and the tiers fired. Installing with `dsh plugin add` never touches the user layer at all: it appends to `dsh.profile.bundles`, and this package's own row arrives through the bundle layer.
 
 Verify without starting anything — the `# == dsh-quorum` comment is the layer's provenance:
 
