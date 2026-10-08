@@ -30,8 +30,7 @@ window.__ModuleLoader__.load({
     const PANEL_MARGIN = 16
     const zh = {
       trigger: 'Quorum',
-      lead: '本会话：Team Lead',
-      member: '本会话：团队成员',
+      agents: '智能体',
       roster: '角色卡',
       tasks: '共享任务',
       ready: '可开始',
@@ -49,8 +48,7 @@ window.__ModuleLoader__.load({
     }
     const en = {
       trigger: 'Quorum',
-      lead: 'This session: Team Lead',
-      member: 'This session: teammate',
+      agents: 'Agents',
       roster: 'Role cards',
       tasks: 'Shared tasks',
       ready: 'Ready',
@@ -250,8 +248,17 @@ window.__ModuleLoader__.load({
       // projection says which role it holds, and its session says what it is doing.
       // Only teammates are openable — the Lead's row would navigate to the session
       // the panel is already shown in.
+      //
+      // The Lead row is still a roster row: upstream's own client view prepends it
+      // (`dsh-experimental-agent-team/lib/invariant.js:427-440`,
+      // `{id: state.id, name: 'lead', role: 'lead', phase: 'active'}`), so leaving it
+      // undotted made a three-agent team read as two. It now carries the same dot as
+      // every other row, and `本会话` marks the row that is the session being viewed —
+      // which is the Lead's row in the Lead's conversation and this teammate's row in
+      // a teammate's conversation.
       const memberRow = (member) => {
         const canOpen = member.role !== 'lead'
+        const isHere = member.id === sessionId
         const activate = () => {
           if (!canOpen) return
           const result = openMember(sessionId, member.id)
@@ -282,19 +289,13 @@ window.__ModuleLoader__.load({
           ...interactive
         },
           h('span', { className: 'qrm-id' },
-            member.role === 'lead'
-              ? null
-              : h('span', { className: 'qrm-dot', 'data-phase': member.phase, 'aria-hidden': 'true' }),
+            h('span', { className: 'qrm-dot', 'data-phase': member.phase, 'aria-hidden': 'true' }),
             h('span', { className: 'qrm-name' }, member.name)
           ),
           h('span', { className: 'qrm-meta' },
-            member.role === 'lead'
-              // The Lead row has no dot and no phase, so without this it showed a bare
-              // name next to rows that carry state — the one row in the roster that read
-              // as unfinished. It is not openable because you are already in it, and
-              // this label is where that is said.
-              ? h('span', { className: 'qrm-phase' }, tr('self'))
-              : h('span', { className: 'qrm-phase' }, knownPhase ? phaseLabel : '—'),
+            // The session you are in is named as such; every other row states what the
+            // projection says about its phase.
+            h('span', { className: 'qrm-phase' }, isHere ? tr('self') : (knownPhase ? phaseLabel : '—')),
             member.phase === 'failed'
               ? h('span', { className: 'qrm-chip', 'data-state': 'bad' }, member.error ?? tr('phase_failed'))
               : null,
@@ -308,16 +309,19 @@ window.__ModuleLoader__.load({
           ref: triggerRef,
           type: 'button', className: 'qrm-trigger', 'aria-expanded': open,
           onClick: toggle
-        }, tr('trigger'), h('span', { className: 'qrm-count' }, String(teammates.length))),
+        }, tr('trigger'), h('span', { className: 'qrm-count' }, String(members.length))),
         open ? h('div', {
           ref: panelRef, className: 'qrm-panel', role: 'dialog', 'aria-label': tr('trigger'),
           style: pos === null ? { right: 16, top: 64 } : { top: pos.top, left: pos.left }
         },
-          h('div', { className: 'qrm-head' }, sessionId === leadId ? tr('lead') : tr('member')),
+          // The band names what the list below is, not which team this is: the team's
+          // own title is already the conversation's heading, and repeating it here made
+          // the panel read as a copy of the conversation rather than as its own surface.
+          h('div', { className: 'qrm-head' }, tr('agents')),
 
           h('div', { className: 'qrm-block' },
             h('div', { className: 'qrm-section' }, tr('roster')),
-            teammates.length === 0 && members.length === 0
+            members.length === 0
               ? h('div', { className: 'qrm-none' }, tr('none'))
               : members.map(memberRow)),
           notice === null ? null : h('div', { className: 'qrm-notice', role: 'status' }, notice),

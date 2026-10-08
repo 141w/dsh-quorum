@@ -314,7 +314,12 @@ test('a row navigates even when its session was never loaded in this browser', (
 // explicit empty state. None of them can be judged by looking at a tree, but each
 // one existing at all is a contract the next edit should have to break on purpose.
 
-test('a teammate row carries a phase dot and the Lead row does not', () => {
+test('every roster row carries a phase dot, the Lead included', () => {
+  // Upstream's client view prepends the Lead row itself
+  // (dsh-experimental-agent-team/lib/invariant.js:427-440), so a team of Lead + two
+  // teammates publishes three rows. Giving the Lead no dot made that team read as two
+  // agents on screen, which is how the count and the list came to disagree with the
+  // official panel next to it.
   const h = makeHarness({ team: TEAM, binding: () => undefined, sessions: {} })
   h.exported.apply(h.ctx)
   h.setSessionStore({ projectionsBySession: { 'lead-1': { values: { agentTeam: TEAM } } } })
@@ -331,11 +336,57 @@ test('a teammate row carries a phase dot and the Lead row does not', () => {
 
   const dotIn = (row) => find(row, (node) => node.props?.className === 'qrm-dot')
   const [lead, reviewer] = rows
-  assert.equal(dotIn(lead), undefined, 'the Lead is the session you are already in; it gets no status')
+  assert.equal(rows.length, 2, 'Lead + teammate')
+  assert.equal(dotIn(lead)?.props['data-phase'], 'active', 'the Lead row carries the phase the wire gives it')
   const dot = dotIn(reviewer)
   assert.ok(dot !== undefined, 'a teammate shows its phase as a dot')
   assert.equal(dot.props['data-phase'], 'active', 'the dot is phase-addressed for styling')
   assert.equal(dot.props['aria-hidden'], 'true', 'the phase is already spoken by the text beside it')
+})
+
+test('the header names the list, and the trigger counts the Lead too', () => {
+  // The panel's title band used to restate which session this is ("本会话：Team Lead").
+  // That fact belongs on the row it describes, not on the header, and the header was
+  // otherwise a second copy of the conversation's own title.
+  const h = makeHarness({ team: TEAM, binding: () => undefined, sessions: {} })
+  h.exported.apply(h.ctx)
+  h.setSessionStore({ projectionsBySession: { 'lead-1': { values: { agentTeam: TEAM } } } })
+  const before = h.render()
+  const trigger = find(before, (node) => node.props?.className === 'qrm-trigger')
+  const badge = find(trigger, (node) => node.props?.className === 'qrm-count')
+  assert.equal(badge.children[0], '2', 'lead + teammate, the same number the list shows')
+
+  const tree = h.open()
+  const head = find(tree, (node) => node.props?.className === 'qrm-head')
+  assert.equal(head.children[0], 'agents', 'the band labels the roster, not the team')
+})
+
+test('viewed from inside a teammate, the current-session marker moves to that row', () => {
+  // `本会话` is a property of the row you are looking at, not of the Lead: opening this
+  // panel from a member's own conversation must not mark the Lead's row as current.
+  const h = makeHarness({
+    team: TEAM,
+    binding: (id) => (id === 'child-1'
+      ? { session: { getSnapshot: () => ({ subagent: { address: { parentSessionId: 'lead-1', childSessionId: 'child-1', mode: 'continuable' } } }) } }
+      : undefined),
+    sessions: {},
+  })
+  h.exported.apply(h.ctx)
+  h.setSessionStore({ projectionsBySession: { 'lead-1': { values: { agentTeam: TEAM } } } })
+  const tree = h.open({ sessionId: 'child-1' })
+
+  const rows = []
+  const collect = (node) => {
+    if (!node || typeof node !== 'object') return
+    if (Array.isArray(node)) return node.forEach(collect)
+    if (node.props?.className === 'qrm-row') rows.push(node)
+    ;(node.children ?? []).forEach(collect)
+  }
+  collect(tree)
+  const labelIn = (row) => find(row, (node) => node.props?.className === 'qrm-phase')?.children[0]
+  const [lead, reviewer] = rows
+  assert.equal(labelIn(reviewer), 'self', 'the member being viewed is the current session')
+  assert.equal(labelIn(lead), 'phase_active', 'and the Lead is just another row with a phase')
 })
 
 test('the clickable row shows a chevron, and it is not announced', () => {
@@ -365,10 +416,9 @@ test('an empty roster says so instead of rendering an empty section', () => {
 })
 
 test('the Lead row says you are in it, instead of showing nothing at all', () => {
-  // Every teammate row carries a dot and a phase. The Lead row deliberately has neither
-  // — it is the session you are already in, so a status would be meaningless and the row
-  // is not a link. Without a label that left it a bare name beside rows that carry state,
-  // which is the one thing in the roster that read as unfinished.
+  // Every row carries a dot and a phase now. The row that is the session being viewed
+  // says so in place of the phase text, and it is still not a link — so the roster can
+  // state which row is "here" without a header that restates the conversation title.
   const h = makeHarness({ team: TEAM, binding: () => undefined, sessions: {} })
   h.exported.apply(h.ctx)
   h.setSessionStore({ projectionsBySession: { 'lead-1': { values: { agentTeam: TEAM } } } })

@@ -8,6 +8,25 @@ in `package.json` `peerDependencies` and enforced at install time.
 
 ## Unreleased
 
+### Changed
+
+- **The panel is titled 「智能体」/ "Agents", and its number now includes the Lead.** The
+  title band used to restate which session you are in (`本会话：Team Lead` /
+  `本会话：团队成员`) while the trigger counted teammates only, so a Lead + 2 members team
+  read `Quorum 2`. Upstream's own client view prepends the Lead row
+  (`dsh-experimental-agent-team/lib/invariant.js:427-440`,
+  `{id: state.id, name: 'lead', role: 'lead', phase: 'active'}`) and the official panel
+  counts `team.members.length`, so the two surfaces disagreed about the same team. Now the
+  band names the list, the badge counts every row, and the Lead row carries the same phase
+  dot as its teammates. **"Which session you are in" moved onto the row it describes**: the
+  `本会话` mark sits on the row whose id is the session being viewed — the Lead's row in the
+  Lead's conversation, this member's row inside a teammate's conversation — which is both
+  correct in the teammate case (the old band marked the *Lead* row as current while you were
+  reading a member) and where the eye is already scanning. The two unused dictionary entries
+  are deleted rather than left to rot. The 角色卡 section label stays: the row names *are*
+  the role-card keys the guard binds against (`config.roles[team.name]`), which is this
+  panel's own content and not the official roster's.
+
 ### Fixed
 
 - **The discipline no longer outlives the bundle that installed it.** `tools.guard()`,

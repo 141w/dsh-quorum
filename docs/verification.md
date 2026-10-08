@@ -975,6 +975,32 @@ $ dsh --profile quorum --dump-config | grep -A 6 "id: quorum"
 - 面板「点开成员自己的会话」那次人工点击仍未做（浏览器操作被权限层拦下，未硬重试）。
 - 卸载时守卫真的消失这件事只有单测，没有 `dsh plugin remove` 的真机演示。
 
+### 6. 同日追加：面板标题与计数（2026-10-08）
+
+她指出的两处不一致，根因是**我们把 Lead 行当成了「不属于列表的那一行」**：
+
+- 上游的客户端视图**自己就把 Lead 行放在第 0 位**（`dsh-experimental-agent-team/lib/invariant.js:427-440`：`{id: state.id, name: 'lead', role: 'lead', phase: 'active'}`），官方面板计的是 `team.members.length`；我们 badge 计的是 `teammates.length`。同一个 Lead + 2 成员团队，官方说 3，我们说 2。
+- 标题带写的是「本会话：Team Lead / 团队成员」，而成员列表里 Lead 行**没有点也没有状态**，读起来像表头而不像成员。
+
+改成：标题带 = `智能体 / Agents`；badge = `members.length`；每一行（含 Lead）都带相位点；`本会话` 这个标记**落到行上**——落在 `member.id === sessionId` 的那一行。这同时修掉一个真的错位：在成员自己的会话里打开面板时，旧写法把 **Lead 行**标成「本会话」，而当前会话其实是那个成员。
+
+量出来的数（本地渲染页，`.qrm-*` 与主题 token 都从真实文件抽出，见下方命令）：
+
+```
+viewport 1730x934 → panel 340x418  rightGap 17  overflowX false  rows 3  clippedNames []
+viewport 302x602  → panel 268x435  rightGap 17  overflowX false  rows 3  clippedNames []
+head="智能体"  badge="3"
+```
+
+300px 那栏的宽度是 `min(340px, 100vw − 32px)` 在窗口真为 300px 时的求值结果 268px；预览页里没有「300px 的窗口」，所以按这个值显式代入并标注，不是让它去蒙混成实测。**dsh 里的真机截图仍欠**：浏览器点击被权限层拦了两次（未硬重试），需要在她自己的窗口里确认一次。
+
+```
+$ node ~/.qoder-cn/tmp/build-preview-v2.mjs   # 抽 client.js 的样式数组 + 本机主题 CSS
+$ # 量 getBoundingClientRect：见上表
+```
+
+测试侧跟着改了两条旧断言（它们钉的是旧设计，不是 bug）：`a teammate row carries a phase dot and the Lead row does not` → `every roster row carries a phase dot, the Lead included`；新增「viewed from inside a teammate, the current-session marker moves to that row」，这条正是旧写法的错位。**71/71 全绿。**
+
 ## 已知缺口
 
 1. **拒绝记录无法写进会话日志。** 不是「目前还没写」，而是机制不允许：插件自定义事件类型能写能落盘，但读回来时会被 `KNOWN_SESSION_EVENT_TYPES` 拒绝，且 live `Session.append()` 无法设置 `ignorable` 标记，代价是整个会话永久打不开（见上方纪律 D 实验）。审计要持久，必须换载体；`ctx.logger` 在本机构建里没有任何可见出口。
