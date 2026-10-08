@@ -6,9 +6,17 @@ While `dsh` itself is `0.2.x` (alpha/rc), a `0.x` version here means: minor bump
 behaviour or the role-card semantics, patch bumps do not. The compatible `dsh` range is declared
 in `package.json` `peerDependencies` and enforced at install time.
 
-## Unreleased
+## 0.3.2 - 2026-10-08
+
+Patch release, and the reason to upgrade rather than wait: **every team round on 0.1.0
+through 0.3.1 could permanently brick the conversation it policed.** The fix is one field
+per injected message; nothing else about behaviour changes. Measured blast radius on the
+machine that runs this project's live rounds: 12 of 53 stored sessions carry the event, all
+12 written by this plugin (`docs/verification.md` D15).
 
 ### Fixed
+
+- **The Lead-arming nudge could make a conversation unopenable, permanently.**
 
 - **The Lead-arming nudge could make a conversation unopenable, permanently.** `agent.inject()`
   takes a `UserMessage` — `MessageBase` requires `id` (`dsh-llm/lib/types/message.d.ts:124-133`),

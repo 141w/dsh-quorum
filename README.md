@@ -23,10 +23,12 @@ Three bundles have to land in one profile, in this order: the web app, the exper
 ```sh
 dsh plugin --profile <name> add -w @deepseek-ai/dsh-web-app@0.2.0-rc.2
 dsh plugin --profile <name> add -w @deepseek-ai/dsh-experimental-agent-team-profile@0.2.0-rc.2
-dsh plugin --profile <name> add -w dsh-quorum@0.3.1
+dsh plugin --profile <name> add -w dsh-quorum@0.3.2
 ```
 
-**Install it by name.** `dsh-quorum@0.3.1` went to the public registry on 2026-10-08, so `add -w dsh-quorum@<version>` resolves, and `latest` points at a real version. Note that dsh has no plugin marketplace regardless — the in-app form takes a package name, a GitHub repo or a local directory, and nothing searches npm for you. What makes a dsh plugin findable on npm is the keyword convention (`dsh`, `dsh-plugin`, `deepseek-harness`), which this package declares.
+**Install it by name.** The package is on the public registry (`0.3.1` on 2026-10-08, `0.3.2` the same day), so `add -w dsh-quorum@<version>` resolves and `latest` points at a real version.
+
+> **Upgrade if you are on `0.1.0`–`0.3.1`.** The message this bundle injects to tell a Team Lead that `quorum_wait` exists was written without the `id` and `role` the session validator requires, so on the runs where that message became its own `user/message`, **the conversation could never be opened again.** 12 of the 53 stored sessions on the machine that develops this plugin carry the event, all 12 written by it. `0.3.2` fixes the payload; damaged sessions are not repaired by upgrading — see `docs/verification.md` D15. Note that dsh has no plugin marketplace regardless — the in-app form takes a package name, a GitHub repo or a local directory, and nothing searches npm for you. What makes a dsh plugin findable on npm is the keyword convention (`dsh`, `dsh-plugin`, `deepseek-harness`), which this package declares.
 
 The first version could not be published by CI: npm attaches a trusted publisher to a package that already exists, so `0.3.1` went out from a maintainer machine (`npm login` with 2FA, then `npm publish --access public`), and releases after it go through `.github/workflows/release.yml`. Two consequences of that order, stated because both are checkable and neither is obvious:
 
@@ -38,7 +40,7 @@ The first version could not be published by CI: npm attaches a trusted publisher
 Pin a version if you care about what actually runs, either the npm version or the git revision. Upstream's own guidance is to lock the revision, because a later push to the default branch would otherwise change the code that executes at install time:
 
 ```sh
-dsh plugin --profile <name> add -w 'github:141w/dsh-quorum#v0.3.1'
+dsh plugin --profile <name> add -w 'github:141w/dsh-quorum#v0.3.2'
 ```
 
 Measured for `v0.1.0` on 2026-10-04: resolves in 7.6s, records `github:141w/dsh-quorum#v0.1.0` in the profile, and `--dump-config` still shows the `# == dsh-quorum` layer. The same check for `v0.3.0` is recorded in `docs/verification.md` D11; `v0.3.1` supersedes it before anything reached npm, because D12 found a defect in that release (see the changelog).
