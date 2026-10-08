@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { isAbsolute, relative, resolve } from 'node:path'
 
@@ -855,9 +856,20 @@ export function apply(ctx, config) {
       // "quorum_wait is not in my tool list" and fell back to wait_agent.
       // A tool the model does not know it has is a tool that does not exist.
       try {
+        // Every field below is load-bearing, and `id` is the one that was missing
+        // until 0.3.2. `agent.inject()` takes a `UserMessage` — `MessageBase` requires
+        // `id` (dsh-llm/lib/types/message.d.ts:124-133, "stable identity preserved
+        // across every representation boundary"), and the session validator enforces
+        // it on reload: a message without one is written as a `user/message` lacking an
+        // identified message, and the conversation then never opens again
+        // (dsh-session/lib/index.js:1197, `lacks an identified message`). `source.kind`
+        // must be one of MessageSourceMap's keys too — `system` is not one, which is
+        // what this call used to carry alongside the missing id.
         agent.inject({
+          id: randomUUID(),
+          role: 'user',
           content: [{ type: 'text', text: 'dsh-quorum: the tool `quorum_wait` is now available to you as Team Lead. It blocks until teammates\' reports reach this conversation backed by real tool evidence, and it reports who is silent. Prefer it over `wait_agent`, which cannot observe inactive teammates.' }],
-          source: { kind: 'system' },
+          source: { kind: 'user' },
         })
       } catch (error) {
         console.log(`[quorum] arm nudge failed: ${error?.message ?? error}`)

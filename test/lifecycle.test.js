@@ -181,3 +181,34 @@ test('a fresh Lead object for the same id gets its own guard after the old one d
   assert.equal(h.guards.filter((g) => g.agent === again).length, 1)
   assert.equal(h.registrations.filter((r) => r.agent === again).length, 1)
 })
+// ── 4. The one payload this plugin writes into somebody's conversation ──
+
+test('the arm nudge satisfies the UserMessage contract the session validator enforces', () => {
+  // A plain-JS plugin gets no type check on `agent.inject()`. Every field this
+  // assertion reads was once wrong: the call shipped without `id` and with
+  // `source.kind: 'system'`, which is not a MessageSourceMap key, and the sessions
+  // where that injected item became its own `user/message` can never be reopened
+  // (docs/verification.md D15). If this case ever fails, the plugin is writing
+  // durable conversation data that the runtime will refuse to load back.
+  const { h, lead } = team()
+  const nudge = h.injections.find((i) => i.agent === lead)
+  assert.ok(nudge, 'arming the Lead must also tell the Lead the tool exists')
+  const message = nudge.message
+  assert.equal(typeof message.id, 'string', 'MessageBase.id: stable identity across every representation boundary')
+  assert.ok(message.id.length >= 8, `id must be real, got ${JSON.stringify(message.id)}`)
+  assert.equal(message.id, message.id.trim())
+  assert.equal(message.role, 'user', 'inject() takes a UserMessage')
+  assert.ok(['user', 'model', 'tool', 'system-prompt'].includes(message.source?.kind),
+    `source.kind must be a MessageSourceMap key, got ${JSON.stringify(message.source?.kind)}`)
+  assert.ok(Array.isArray(message.content) && message.content.length > 0, 'content is model-facing blocks')
+  assert.ok(message.content.every((b) => b?.type === 'text' && typeof b.text === 'string' && b.text.length),
+    'every block must be a non-empty text block')
+  assert.doesNotThrow(() => JSON.parse(JSON.stringify(message)), 'the payload must be serializable into the log')
+})
+
+test('two Leads get two different nudge ids, so ids cannot collide across sessions', () => {
+  const a = team()
+  const b = team()
+  const idOf = ({ h, lead }) => h.injections.find((i) => i.agent === lead).message.id
+  assert.notEqual(idOf(a), idOf(b))
+})

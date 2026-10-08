@@ -62,15 +62,14 @@ dsh plugin --profile <name> add -w /path/to/dsh-quorum
 
    Measured, not hypothetical: that is the exact output of installing `github:141w/dsh-quorum` into a fresh profile and starting it.
 
-4. **Do not hand-write a plugin row into your profile's `cordis.patch.yml`.** `scope` is a field of a *layer*, not of a row, and the user layer is not `shared` — so `dsh-config-profile` rejects the row, the bundle never activates, and the only sign is `dsh: warning: 1 entry did not activate`. Measured both ways on 2026-10-04: the same row copied from the bundle layer into the top level of `profile.cordis.patch.yml` produced exactly that. What the user layer **is** for is overriding a row that already exists, by id:
-
+4. **Plugin rows come from bundle layers; your own `cordis.patch.yml` is for overriding rows that already exist.** `dsh plugin add` writes the bundle list and lets each bundle insert its own rows, and `scope` is a field of a *layer* rather than of a row — so hand-writing a fresh plugin row into the user layer is not a supported shape and, if it fails, it fails the same silent way as warning 3 (`1 entry did not activate`). What the user layer is for is an id-targeted override of an existing row, and that path is measured here rather than asserted: `docs/D6-cost-tier-live.md` lowered the budget with it and the cost tiers fired, and `- id: quorum` with `disabled: true` in the same file does turn the bundle's row off (`docs/verification.md` D15).
    ```yaml
    - id: quorum
      name: dsh-quorum
      config: { … }        # patch semantics replace the whole `config`; restate every key
    ```
 
-   That path is not theoretical — `docs/D6-cost-tier-live.md` lowered the budget that way and the tiers fired. Installing with `dsh plugin add` never touches the user layer at all: it appends to `dsh.profile.bundles`, and this package's own row arrives through the bundle layer.
+   Installing with `dsh plugin add` never touches the user layer at all: it appends to `dsh.profile.bundles`, and this package's own row arrives through the bundle layer.
 
 Verify without starting anything — the `# == dsh-quorum` comment is the layer's provenance:
 

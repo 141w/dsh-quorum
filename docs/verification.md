@@ -1317,6 +1317,89 @@ CHANGELOG.md  LICENSE  README.md  client.js  cordis.patch.yml  docs  index.js  p
 
 `v0.3.1` 故意**不建** Release：release workflow 只在 `released` 事件上跑 `npm publish --access public --provenance`，而 `0.3.1` 已在 registry 上，建了就会得到一条 `E409` 红记录。顺序改为：把 Trusted Publisher 三项在 npmjs.com 上填好，下一个版本（`0.3.2` 起）再由 Release 触发 CI 发布。
 
+## D15：B 轮没跑成，因为它要恢复的会话是我们自己写坏的（2026-10-08 13:46–13:55）
+
+### 1. A 轮成立，形状门禁第三种文案真机出现
+
+`quorum-live` + 预算叠加层，任务只要求 Lead 建一个**不布置任何工作**的成员然后自己写文件：
+
+```
+[quorum] policing "lead" (ship) team=session-f377ea62-a4df-40d9-a076-0d0d75765604
+[quorum] policing "reviewer" (scout) team=session-f377ea62-…
+seq 16 CALL   spawn_teammate {"name":"reviewer","description":"Team member created on request; no task assigned."…}
+seq 31 CALL   write {"content":"unloaded A/B probe","file_path":"…/NOTES-AB.md"}
+seq 32 ERROR write :: Error: role card "lead" may not write: this team is still in scout shape, and every report that
+       is missing is from a member that is not running (reviewer [inactive] not-reported). Wake one with send_message…
+```
+
+这是 stalled 分支第一次真机命中——成员一 spawn 出来就 `[inactive]`（它没有任务），所以"每个缺席成员都不在跑"这条判据被真实走了一遍。25 秒、一次会话、无需成员工作。
+
+### 2. B 轮要恢复同一条会话，运行时拒绝：`lacks an identified message`
+
+```
+$ dsh --profile quorum-live headless --session-id session-f377ea62-… "…再执行一次…"
+dsh: stored session "session-f377ea62-…" is corrupt: … failed validation:
+     Error: session event at seq 26 lacks an identified message
+```
+
+seq 26 是**我们自己写进去的**：内容正是 arm nudge 那句 `dsh-quorum: the tool \`quorum_wait\` is now available to you as Team Lead…`，落盘形状是 `user/message`，keys 只有 `content,source`。
+
+契约在 `dsh-agent/lib/types/runtime-types.d.ts:207-209`：`inject(message: UserMessage)`，注释原话 "identified injected context"；`MessageBase`（`dsh-llm/lib/types/message.d.ts:124-133`）要求 `id`。校验器 `dsh-session/lib/index.js:1190-1199` 对 `user/message` 取的是**平铺的 record 本身**作 message，并要求 `id` 非空、`role === "user"`。我们三个字段全错：没有 `id`、没有 `role`、`source.kind` 用了 `MessageSourceMap` 里不存在的 `'system'`。纯 JS 插件没有类型检查，运行时也不在 `inject()` 边界上校验，所以它一路写到落盘才炸——**炸在别人的会话上**。
+
+### 3. 影响范围：51 个存盘会话里的 12 个，全部由这条 nudge 造成
+
+`.probe/scan-corrupt-sessions.mjs` 按校验器逐条重放（不是按代码路径猜）：
+
+```
+sessions scanned: 51
+rejected-on-reload shape found in: 12 session(s)
+of those, carrying "now available to you as Team Lead": 12
+  seq 29 / seq 26 / seq 31 / seq 50 …  user/message → lacks an identified message  keys=content,source
+```
+
+12 条里包括 D12 的 `session-b8c712d9`、D13 的 `session-94010aee`、以及上午在浏览器历史里报 corrupt 的 `session-e2a5e835`。**只有会出现"注入项自己成为一条 `user/message`"的那种时序才毒化**——`session-a86ccf90`（D3–D8 那个长命团队）里我们那句只留下 `agent/inbox/spliced`，所以它能正常打开，这也正是这个 bug 能活过三个发布版本的原因。
+
+### 4. 修法与钉法
+
+`agent.inject()` 现在交一个合法的 `UserMessage`：`id: randomUUID()`（`node:crypto`，不破零 `@deepseek-ai/*` import 的纪律）、`role: 'user'`、`source: { kind: 'user' }`。`test/lifecycle.test.js` 加两条：一条把契约逐字段钉住（id 非空字符串、role、`source.kind` 必须是 `MessageSourceMap` 的键、content 是非空 text block 数组、可序列化），一条钉两个 Lead 的 id 不重复。**两条对修复前的 `HEAD` 全红**，修后 `# tests 90 / pass 90`。
+
+扫描器本身也记一笔错：第一版按 `data.message.id` 找，而 `user/message` 的字段是平铺的，于是把 48 条健康会话报成坏的。改正后的版本把校验器的每个分支照抄了一遍，包括 `tool/result` 的 callId 配对。这类"工具自己先错一遍"必须写在交付里，否则下一个人会拿那个 48 当结论。
+
+### 5. 卸载反证：同一会话上的 A/B 闭合（13:56–13:57，整对 52,438 billed）
+
+原设计要恢复的那条会话正好被上面的 bug 写坏了，所以不动她的数据，改用修好的代码新建一条干净会话重做——A/B 的变量仍然只有"插件挂不挂"。
+
+A 轮（挂载，`session-00d50ee2-…`）：
+
+```
+[quorum] policing "lead" (ship) team=session-00d50ee2-…
+[quorum] policing "reviewer" (scout) team=session-00d50ee2-…
+seq 30 CALL   write {"content":"unloaded A/B probe\n","file_path":"NOTES-AB.md"}
+seq 31 ERROR write :: Error: role card "lead" may not write: this team is still in scout shape — 0/1 verified report(s).
+       Outstanding: reviewer [running] not-reported. …
+```
+
+B 轮：在 profile 层加 `- id: quorum` + `disabled: true`（就是插件管理器自己写文件的形状，`dsh-plugin-manager/lib/index.js:904-908` 的 `document.add({id, disabled: !enabled})`），**恢复同一条会话**，让它重复同一个动作：
+
+```
+$ dsh --profile quorum-live headless --session-id session-00d50ee2-… "…再执行一次…"
+exit=0  (7 秒)
+$ grep -h "\[quorum\]" ab-b2.* | sort -u
+（空——整个进程没有一行 quorum 输出，bundle 未挂载）
+$ cat NOTES-AB.md
+unloaded A/B probe
+$ ls -la NOTES-AB.md
+-rw-------@ 1 wweiqi  staff  19 Oct  8 13:57 NOTES-AB.md
+```
+
+同一份 durable 历史、同一个 Lead、同一把 `write`：挂载时被机制拒绝，停用时落盘成功。这条闭合的是**"配置层的 disable 会带走整个纪律，不留残余拒绝"**。要说清边界：它不是 `ctx.effect` 的**进程内**卸载证明（headless 一次一进程，做不到 in-process unload），那一半仍然只有 `test/lifecycle.test.js` 的 `h.unload()` 用例；进程内卸载的真机证明需要一个长跑 web 服务加运行时 remove，还没做。
+
+`practices.md:19` 那句"unloading the plugin does not dispose agent.ctx registrations by itself"因此**没有被这轮反证**——它说的是运行时不替我们做，我们做没做由单测钉；A/B 钉的是配置层这条路径端到端可用。
+
+A/B 的开销也比预估低：报的是 5–10 万 billed，实际整对 52,438（Lead 流 31,060 + 恢复轮 21,378，成员会话 0）。成员被明确要求不布置任务，是这轮便宜的主因——**证明"守卫在不在"不需要成员干活**，这一点值得留给下一轮的成本设计。
+
+## 已知缺口
+
 ## 已知缺口
 
 1. **拒绝记录无法写进会话日志。** 不是「目前还没写」，而是机制不允许：插件自定义事件类型能写能落盘，但读回来时会被 `KNOWN_SESSION_EVENT_TYPES` 拒绝，且 live `Session.append()` 无法设置 `ignorable` 标记，代价是整个会话永久打不开（见上方纪律 D 实验）。审计要持久，必须换载体；`ctx.logger` 在本机构建里没有任何可见出口。
@@ -1334,3 +1417,5 @@ CHANGELOG.md  LICENSE  README.md  client.js  cordis.patch.yml  docs  index.js  p
 13. **`agent.ctx.effect()` 这条内层路径还没有真机证据**（D9 第 5 节）。它由 `test/lifecycle.test.js` 的两条用例覆盖（agent 作用域自拆、`agent/disposed` 走插件侧 disposer），但真机上是否如类型定义那样存在，要等一次会创建团队 agent 的轮次。
 14. **形状切换门禁没有一轮真机证据**（D10 第 2 节）。它改变的是真团队前几步能做什么，而 `quorum.requires: all` 的锁定语义在模型侧会怎么被反应——唤醒成员、改道汇报、还是试图绕路——只能跑一轮才知道。跑绿 12 条单测不等于跑过纪律。
 15. **门禁依赖 Lead 会话的投影驻留**：投影不在本进程时写被拒（刻意 fail-closed），所以「Lead 会话被回收再打开」会让已收敛的团队重新落回 scout。与第 12 条同源，彻底修法仍是把用量与收敛做成投影折叠单元。
+16. **形状门禁的拒绝文案在真机上会命中三种分支**（D15 的 stalled 分支是第一次），但**放行之后成本档接管**这条仍未同轮验证——D13/D15 都把预算抬开了。
+17. **`agent.inject()` 不是校验点**：上游在该边界不校验 `UserMessage`（缺 `id`、错 `role`、`source.kind` 不在 `MessageSourceMap` 里都能写下去），代价落在会话日志的读取端——会话永久打不开。本包已按契约交合法对象（D15），但**插件写坏用户会话这件事目前没有机制级防线**，这是上游 gap 的候选第五条。

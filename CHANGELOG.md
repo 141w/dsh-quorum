@@ -6,6 +6,40 @@ While `dsh` itself is `0.2.x` (alpha/rc), a `0.x` version here means: minor bump
 behaviour or the role-card semantics, patch bumps do not. The compatible `dsh` range is declared
 in `package.json` `peerDependencies` and enforced at install time.
 
+## Unreleased
+
+### Fixed
+
+- **The Lead-arming nudge could make a conversation unopenable, permanently.** `agent.inject()`
+  takes a `UserMessage` — `MessageBase` requires `id` (`dsh-llm/lib/types/message.d.ts:124-133`),
+  and the reload validator requires `id` plus `role: "user"` on the flat `user/message`
+  record (`dsh-session/lib/index.js:1190-1199`). The call carried `content` and
+  `source: { kind: 'system' }` only: no id, no role, and a `source.kind` that is not a
+  `MessageSourceMap` key at all. A plain-JS plugin gets no type check there and the runtime
+  does not validate at the inject boundary, so it reached the durable log — where the next
+  reopen of that session fails with `lacks an identified message`. Reproduced and sized
+  (`docs/verification.md` D15): **12 of the 51 stored sessions on the machine that ran the
+  live rounds carry the bad event, and all 12 carry this plugin's text**, across 0.1.0
+  through 0.3.1. It is intermittent — the poison appears only when the injected item is
+  admitted as its own `user/message`, which is why the long-lived team session used by most
+  of the D-series stayed openable and the bug shipped three times. `randomUUID()` from
+  `node:crypto` supplies the id (zero `@deepseek-ai/*` imports intact); two cases in
+  `test/lifecycle.test.js` pin the contract field by field and both run red against the
+  pre-fix build. Those 12 sessions are not repairable by a code change; a log rewrite can
+  back-fill the ids, and that is a decision about someone else's conversations, not a
+  cleanup task.
+### Verified
+
+- **Disabling the bundle removes the discipline, end to end, on one live session**
+  (`docs/verification.md` D15): mounted, the Lead's `write` is refused at seq 31; the same
+  session resumed with `- id: quorum` + `disabled: true` in the profile layer prints no
+  `[quorum]` line at all and the identical write lands on disk (19 bytes, read back). The
+  disable shape is the plugin manager's own (`dsh-plugin-manager/lib/index.js:904-908`), so
+  this is the path a user actually takes, not a hand-made one.
+- Not claimed by that run: in-process unload. Headless is one process per turn, so the
+  `ctx.effect` half still rests on `test/lifecycle.test.js`; a live
+  remove-while-serving demonstration needs a long-running web server and is still open.
+
 ## 0.3.1 - 2026-10-08
 
 Supersedes `0.3.0` before anything reached npm: `v0.3.0` was tagged and installed from the
