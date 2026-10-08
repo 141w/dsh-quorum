@@ -7,7 +7,11 @@
 # — the same audience npm validates — and decodes it.
 #
 # It publishes nothing. The token itself is never printed, only its claim set.
-# Delete this file once the trusted-publisher configuration is confirmed working.
+#
+# Kept on purpose. This is the only way to see what identity CI presents to npm, and
+# the failure it was written for produced an error message that blamed the wrong thing
+# (docs/verification.md D18) — worth 30 seconds of a manual run before re-reading
+# registry error text again.
 
 name: oidc-claims
 

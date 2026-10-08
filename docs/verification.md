@@ -1554,9 +1554,38 @@ npm error 404 Not Found - PUT https://registry.npmjs.org/dsh-quorum - Not found
 - **新建的连接必须在 2 天内完成第一次成功发布**，否则过期、不可用也不可改，只能删了重建。所以"配置"和"发布"不能排到不同日子。
 - 管理入口的原文路径：`npmjs.com → Packages → <package> → Settings → Trusted publishing`。
 
-### 5. 0.3.3 的落地实测
+### 5. 0.3.3 的落地实测（15:42–15:47，0 token）
 
-（发布后补：registry 版本列表、`latest` 指向、attestation 是否可验、以及一次真实的 `dsh plugin add -w dsh-quorum@0.3.3`。在那之前本节只到第 4 条为止成立。）
+`git tag v0.3.3`（轻量 tag，指向 `8011a79`，与既有 `v0.3.1`/`v0.3.2` 同形态）→ `gh release create` → workflow 由 `released` 事件触发，`publish` job **48 秒通过**，日志里 `publishing with npm 12.2.0; trusted publishing requires >= 11.5.1`，末尾是 `+ dsh-quorum@0.3.3`。
+
+分五件事各自验，不拿一条推另一条：
+
+```
+$ npm view dsh-quorum versions        [ '0.0.0-stage', '0.3.1', '0.3.3' ]
+$ npm view dsh-quorum dist-tags       { latest: '0.3.3' }
+$ npm view dsh-quorum@0.3.3 gitHead   8011a796cac07d658a1e81dda763931dfa8a1809   # == tag
+$ curl -s registry.npmjs.org/-/npm/v1/attestations/dsh-quorum@0.3.3 | head -c 120
+  {"attestations":[{"predicateType":"https://github.com/npm/attestation/tree/main/specs/publish/v0.1",…
+$ curl -s registry.npmjs.org/-/npm/v1/attestations/dsh-quorum@0.3.1
+  {"error":"Not found"}
+```
+
+**provenance 这次是真的有了**，而且和 0.3.1 的对照是同一条命令两种回话。`npm audit signatures` 在一个把 0.3.3 装进依赖树的临时项目里回 `invalid: 0, missing: 0`（它只列不合格的两类，所以"不在表里"才是通过）。注意 `npm view` 在发布后头一分钟还回 404——npm 自己那行 `Your package is being processed and may take a few minutes to become available` 是字面意思，别把它当成又一次失败。
+
+按 README 里那条可照抄的命令真装了一遍（`npmcheck` 这个校验用 profile 原本停在 0.3.1）：
+
+```
+$ dsh plugin --profile npmcheck add -w dsh-quorum@0.3.3
+- dsh-quorum 0.3.1
++ dsh-quorum 0.3.3          Done in 35.6s
+$ dsh --profile npmcheck --dump-config | grep -A2 "id: quorum"
+- id: quorum
+  name: dsh-quorum
+$ node -p "require('<profile>/node_modules/dsh-quorum/package.json').version"   0.3.3
+$ grep -c randomUUID <profile>/node_modules/dsh-quorum/index.js                 2
+```
+
+最后一条是专门对着这次修的东西去的：**落盘下来的那份代码里确实有 `randomUUID`**，也就是 0.1.0–0.3.1 那条会写坏会话的 nudge 在装出来的插件里已经不存在了。
 
 ## 已知缺口
 
@@ -1577,4 +1606,4 @@ npm error 404 Not Found - PUT https://registry.npmjs.org/dsh-quorum - Not found
 15. **门禁依赖 Lead 会话的投影驻留**：投影不在本进程时写被拒（刻意 fail-closed），所以「Lead 会话被回收再打开」会让已收敛的团队重新落回 scout。与第 12 条同源，彻底修法仍是把用量与收敛做成投影折叠单元。
 16. **形状门禁的拒绝文案在真机上会命中三种分支**（D15 的 stalled 分支是第一次），但**放行之后成本档接管**这条仍未同轮验证——D13/D15 都把预算抬开了。
 17. **`agent.inject()` 不是校验点**：上游在该边界不校验 `UserMessage`（缺 `id`、错 `role`、`source.kind` 不在 `MessageSourceMap` 里都能写下去），代价落在会话日志的读取端——会话永久打不开。本包已按契约交合法对象（D15），但**插件写坏用户会话这件事目前没有机制级防线**，这是上游 gap 的候选第五条。
-18. ~~**0.3.2 还没在 npm 上**（D16 第 1 节）~~ —— **归因错了，见 D18**：被拒的原因不是 trusted publisher 没配，而是 CI 用 Node 22 自带的 npm 10.9.9（trusted publishing 要求 ≥ 11.5.1），OIDC 令牌从未换成 registry 凭据。修复在 main 上，`0.3.2` 因为 re-run 只会用 tag 上那份 workflow 而永远发不出去，发止血版的是 `0.3.3`。另：修复坏会话的工具是帧级手术，改完必须让**运行时自己重开一次**当判据——只跑日志校验器不够，我第一次就是靠单帧重写骗过了自己的扫描器。
+18. ~~**0.3.2 还没在 npm 上**（D16 第 1 节）~~ —— **归因错了，见 D18**：被拒的原因不是 trusted publisher 没配，而是 CI 用 Node 22 自带的 npm 10.9.9（trusted publishing 要求 ≥ 11.5.1），OIDC 令牌从未换成 registry 凭据。修复在 main 上，`0.3.2` 因为 re-run 只会用 tag 上那份 workflow 而永远发不出去。**已闭合：`0.3.3` 于 2026-10-08 15:43 由 CI 发出，`latest` 指向它，带可查的 provenance attestation，并按 README 那条命令真装过一遍（D18 第 5 节）。** 另：修复坏会话的工具是帧级手术，改完必须让**运行时自己重开一次**当判据——只跑日志校验器不够，我第一次就是靠单帧重写骗过了自己的扫描器。
